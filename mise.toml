@@ -1,5 +1,6 @@
 [tools]
 rust = { version = "1.99.0", components = "clippy,rustfmt" }
+actionlint = "1.7.12"
 
 [tasks.build]
 description = "Build lmm"
@@ -10,10 +11,11 @@ description = "Run all tests"
 run = "cargo test --locked"
 
 [tasks.lint]
-description = "Run clippy and rustfmt check"
+description = "Run rustfmt check, clippy and actionlint"
 run = [
   "cargo fmt --all -- --check",
   "cargo clippy --locked --all-targets -- -D warnings",
+  "actionlint",
 ]
 
 [tasks.fmt]

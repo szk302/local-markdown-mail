@@ -358,7 +358,7 @@ hook:
 ```bash
 mise run build   # cargo build
 mise run test    # cargo test（単体テスト・結合テスト）
-mise run lint    # rustfmt --check と clippy -D warnings
+mise run lint    # rustfmt --check、clippy -D warnings、actionlint（ワークフローの検査）
 mise run fmt     # 整形
 ```
 
