@@ -1,6 +1,8 @@
 [tools]
 rust = { version = "1.99.0", components = "clippy,rustfmt" }
 actionlint = "1.7.12"
+# Used by actionlint to check `run:` scripts (same result locally and in CI).
+shellcheck = "0.11.0"
 
 [tasks.build]
 description = "Build lmm"

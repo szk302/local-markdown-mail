@@ -161,7 +161,7 @@ jobs:
 
       - name: Checksums
         working-directory: dist
-        run: sha256sum *.tar.gz | tee SHA256SUMS
+        run: sha256sum -- *.tar.gz | tee SHA256SUMS
 
       - name: Create the release
         env:
