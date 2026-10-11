@@ -1,0 +1,29 @@
+Third-party software notices for lmm
+====================================
+
+The lmm binary includes the following third-party crates. Their license
+texts are reproduced below. The Rust standard library (MIT OR Apache-2.0,
+see https://github.com/rust-lang/rust/blob/master/COPYRIGHT) is linked
+into every binary, and Linux binaries also statically link musl libc
+(MIT, see MUSL-COPYRIGHT).
+
+Overview
+--------
+{{#each overview}}
+{{name}} ({{count}}):
+{{#each indices}}
+  - {{#with (lookup ../../licenses this)}}{{#each used_by}}{{crate.name}} {{crate.version}}{{#unless @last}}, {{/unless}}{{/each}}{{/with}}
+{{/each}}
+{{/each}}
+
+Licenses
+--------
+{{#each licenses}}
+
+================================================================================
+{{name}}
+Used by: {{#each used_by}}{{crate.name}} {{crate.version}}{{#unless @last}}, {{/unless}}{{/each}}
+--------------------------------------------------------------------------------
+
+{{{text}}}
+{{/each}}

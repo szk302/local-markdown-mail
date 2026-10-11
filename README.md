@@ -21,8 +21,11 @@ curl -LO "https://github.com/szk302/local-markdown-mail/releases/download/$v/lmm
 curl -LO "https://github.com/szk302/local-markdown-mail/releases/download/$v/SHA256SUMS"
 grep "lmm-$v-$t.tar.gz" SHA256SUMS | shasum -a 256 -c -   # Linux では sha256sum -c -
 tar xzf "lmm-$v-$t.tar.gz"
+mkdir -p ~/.local/bin
 install "lmm-$v-$t/lmm" ~/.local/bin/
 ```
+
+`~/.local/bin` が `PATH` に入っていない場合は、シェルの設定（`~/.zshrc` など）に `export PATH="$HOME/.local/bin:$PATH"` を加えてください。アーカイブには、`LICENSE` と、同梱しているサードパーティーのライセンス表示（`THIRD-PARTY-LICENSES.txt`、Linux 版は `MUSL-COPYRIGHT` も）が入っています。
 
 macOS で、ブラウザからダウンロードしたファイルが Gatekeeper にブロックされる場合は、`xattr -d com.apple.quarantine lmm` で解除できます。
 
@@ -363,9 +366,21 @@ CI（GitHub Actions）は、ubuntu-latest と macos-latest で `mise run lint` �
 
 ### リリース
 
-`Cargo.toml` の `version` を上げてマージした後、同じバージョンのタグ（例: `v0.1.0`）を push します。`.github/workflows/release.yml` が 4 つのターゲットのバイナリを作り、GitHub Release に添付します（`SHA256SUMS` 付き）。タグと `Cargo.toml` のバージョンが一致しない場合は失敗します。
+1. `Cargo.toml` の `version` を上げ、`cargo build` で `Cargo.lock` も更新して、両方をコミットする（`Cargo.lock` が古いと `--locked` のビルドが失敗します）。
+2. プルリクエストをマージした後、`main` のそのコミットに同じバージョンのタグを付けて push する。
 
 ```bash
+git switch main && git pull --ff-only
 git tag v0.1.0
 git push origin v0.1.0
 ```
+
+`.github/workflows/release.yml` が、4 つのターゲットでテストとビルドを行い、GitHub Release にアーカイブと `SHA256SUMS` を添付します。
+
+- タグが `Cargo.toml` のバージョンと一致しない場合や、タグのコミットが `main` に含まれない場合は、何も公開せずに失敗します。
+- `-` を含むタグ（例: `v0.2.0-rc.1`）は、プレリリースとして公開します。
+- Actions の画面から手動で実行（`workflow_dispatch`）すると、ビルドとテストだけを行い、公開はしません。リリースの前の確認に使えます。
+
+## ライセンス
+
+[MIT](LICENSE)
