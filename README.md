@@ -4,6 +4,30 @@
 
 ## インストール
 
+### ビルド済みのバイナリ
+
+[Releases](https://github.com/szk302/local-markdown-mail/releases) から、環境に合ったファイルをダウンロードして展開し、`lmm` を `PATH` の通った場所に置きます。
+
+| ファイル名の末尾 | 環境 |
+| :--- | :--- |
+| `x86_64-unknown-linux-musl.tar.gz` | Linux（x86_64、静的リンク） |
+| `aarch64-unknown-linux-musl.tar.gz` | Linux（arm64、静的リンク） |
+| `aarch64-apple-darwin.tar.gz` | macOS（Apple Silicon） |
+| `x86_64-apple-darwin.tar.gz` | macOS（Intel） |
+
+```bash
+v=v0.1.0; t=aarch64-apple-darwin
+curl -LO "https://github.com/szk302/local-markdown-mail/releases/download/$v/lmm-$v-$t.tar.gz"
+curl -LO "https://github.com/szk302/local-markdown-mail/releases/download/$v/SHA256SUMS"
+grep "lmm-$v-$t.tar.gz" SHA256SUMS | shasum -a 256 -c -   # Linux では sha256sum -c -
+tar xzf "lmm-$v-$t.tar.gz"
+install "lmm-$v-$t/lmm" ~/.local/bin/
+```
+
+macOS で、ブラウザからダウンロードしたファイルが Gatekeeper にブロックされる場合は、`xattr -d com.apple.quarantine lmm` で解除できます。
+
+### ソースから
+
 Rust ツールチェーンは [mise](https://mise.jdx.dev/) で管理しています。
 
 ```bash
@@ -336,3 +360,12 @@ mise run fmt     # 整形
 ```
 
 CI（GitHub Actions）は、ubuntu-latest と macos-latest で `mise run lint` と `mise run test` を実行します。
+
+### リリース
+
+`Cargo.toml` の `version` を上げてマージした後、同じバージョンのタグ（例: `v0.1.0`）を push します。`.github/workflows/release.yml` が 4 つのターゲットのバイナリを作り、GitHub Release に添付します（`SHA256SUMS` 付き）。タグと `Cargo.toml` のバージョンが一致しない場合は失敗します。
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
