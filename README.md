@@ -4,6 +4,33 @@
 
 ## インストール
 
+### ビルド済みのバイナリ
+
+[Releases](https://github.com/szk302/local-markdown-mail/releases) から、環境に合ったファイルをダウンロードして展開し、`lmm` を `PATH` の通った場所に置きます。
+
+| ファイル名の末尾 | 環境 |
+| :--- | :--- |
+| `x86_64-unknown-linux-musl.tar.gz` | Linux（x86_64、静的リンク） |
+| `aarch64-unknown-linux-musl.tar.gz` | Linux（arm64、静的リンク） |
+| `aarch64-apple-darwin.tar.gz` | macOS（Apple Silicon） |
+| `x86_64-apple-darwin.tar.gz` | macOS（Intel） |
+
+```bash
+v=v0.1.0; t=aarch64-apple-darwin
+curl -LO "https://github.com/szk302/local-markdown-mail/releases/download/$v/lmm-$v-$t.tar.gz"
+curl -LO "https://github.com/szk302/local-markdown-mail/releases/download/$v/SHA256SUMS"
+grep "lmm-$v-$t.tar.gz" SHA256SUMS | shasum -a 256 -c -   # Linux では sha256sum -c -
+tar xzf "lmm-$v-$t.tar.gz"
+mkdir -p ~/.local/bin
+install "lmm-$v-$t/lmm" ~/.local/bin/
+```
+
+`~/.local/bin` が `PATH` に入っていない場合は、シェルの設定（`~/.zshrc` など）に `export PATH="$HOME/.local/bin:$PATH"` を加えてください。アーカイブには、`LICENSE` と、同梱しているサードパーティーのライセンス表示（`THIRD-PARTY-LICENSES.txt`、Linux 版は `MUSL-COPYRIGHT` も）が入っています。
+
+macOS で、ブラウザからダウンロードしたファイルが Gatekeeper にブロックされる場合は、`xattr -d com.apple.quarantine lmm` で解除できます。
+
+### ソースから
+
 Rust ツールチェーンは [mise](https://mise.jdx.dev/) で管理しています。
 
 ```bash
@@ -331,8 +358,29 @@ hook:
 ```bash
 mise run build   # cargo build
 mise run test    # cargo test（単体テスト・結合テスト）
-mise run lint    # rustfmt --check と clippy -D warnings
+mise run lint    # rustfmt --check、clippy -D warnings、actionlint（ワークフローの検査）
 mise run fmt     # 整形
 ```
 
 CI（GitHub Actions）は、ubuntu-latest と macos-latest で `mise run lint` と `mise run test` を実行します。
+
+### リリース
+
+1. `Cargo.toml` の `version` を上げ、`cargo build` で `Cargo.lock` も更新して、両方をコミットする（`Cargo.lock` が古いと `--locked` のビルドが失敗します）。
+2. プルリクエストをマージした後、`main` のそのコミットに同じバージョンのタグを付けて push する。
+
+```bash
+git switch main && git pull --ff-only
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+`.github/workflows/release.yml` が、4 つのターゲットでテストとビルドを行い、GitHub Release にアーカイブと `SHA256SUMS` を添付します。
+
+- タグが `Cargo.toml` のバージョンと一致しない場合や、タグのコミットが `main` に含まれない場合は、何も公開せずに失敗します。
+- `-` を含むタグ（例: `v0.2.0-rc.1`）は、プレリリースとして公開します。
+- Actions の画面から手動で実行（`workflow_dispatch`）すると、ビルドとテストだけを行い、公開はしません。リリースの前の確認に使えます。
+
+## ライセンス
+
+[MIT](LICENSE)
