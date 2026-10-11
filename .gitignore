@@ -1,0 +1,5 @@
+/target
+.lmm-inbox/
+.lmm-drafts/
+.lmm.local.yml
+.tmp/

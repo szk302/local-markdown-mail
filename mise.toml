@@ -1,0 +1,21 @@
+[tools]
+rust = { version = "1.99.0", components = "clippy,rustfmt" }
+
+[tasks.build]
+description = "Build lmm"
+run = "cargo build --locked"
+
+[tasks.test]
+description = "Run all tests"
+run = "cargo test --locked"
+
+[tasks.lint]
+description = "Run clippy and rustfmt check"
+run = [
+  "cargo fmt --all -- --check",
+  "cargo clippy --locked --all-targets -- -D warnings",
+]
+
+[tasks.fmt]
+description = "Format sources"
+run = "cargo fmt --all"
