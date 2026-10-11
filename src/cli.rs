@@ -85,9 +85,12 @@ pub struct DraftArgs {
 
 #[derive(Debug, Args)]
 pub struct ReceiveArgs {
-    /// Maximum number of messages to extract
+    /// Maximum number of messages to extract, oldest first [default: 1]
     #[arg(long = "max", value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
     pub max: Option<u64>,
+    /// Extract all new messages (no limit)
+    #[arg(long = "all", conflicts_with = "max")]
+    pub all: bool,
     /// Receive directory
     #[arg(value_name = "DIR")]
     pub dir: Option<PathBuf>,
@@ -110,9 +113,12 @@ pub struct WaitArgs {
     /// Give up after SEC seconds (exit code 3)
     #[arg(long = "timeout", value_name = "SEC")]
     pub timeout: Option<f64>,
-    /// Maximum number of messages to extract
+    /// Maximum number of matching messages to extract, oldest first [default: 1]
     #[arg(long = "max", value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
     pub max: Option<u64>,
+    /// Extract all matching messages found at that time (no limit)
+    #[arg(long = "all", conflicts_with = "max")]
+    pub all: bool,
     /// Receive directory
     #[arg(value_name = "DIR")]
     pub dir: Option<PathBuf>,

@@ -28,7 +28,7 @@ fn receive_extracts_and_moves_to_cur() {
     let e = setup();
     let (_, p1) = send(&e, "one\n");
     let (_, p2) = send(&e, "two\n");
-    let out = e.ok(Some("beta"), &["receive"]);
+    let out = e.ok(Some("beta"), &["receive", "--all"]);
     let dest = e.work.join(".lmm-inbox/beta");
     let n1 = p1.file_name().unwrap();
     let n2 = p2.file_name().unwrap();
@@ -52,6 +52,32 @@ fn receive_extracts_and_moves_to_cur() {
     assert!(!entries(&dest).iter().any(|n| n.starts_with('.')));
     // Second run: nothing.
     assert_eq!(e.ok(Some("beta"), &["receive"]), "");
+}
+
+/// §7.1: one message per run by default, oldest first.
+#[test]
+fn receive_defaults_to_one_oldest_message() {
+    let e = setup();
+    let sent: Vec<_> = (0..3).map(|i| send(&e, &format!("{i}\n")).1).collect();
+    let dest = e.work.join(".lmm-inbox/beta");
+    for p in &sent {
+        let out = e.ok(Some("beta"), &["receive"]);
+        assert_eq!(
+            lines(&out),
+            vec![dest.join(p.file_name().unwrap()).display().to_string()]
+        );
+    }
+    assert_eq!(e.ok(Some("beta"), &["receive"]), "");
+    // --all takes everything; --all with --max is a usage error.
+    for i in 0..3 {
+        send(&e, &format!("again {i}\n"));
+    }
+    assert_eq!(
+        code(&e.run(Some("beta"), &["receive", "--all", "--max", "2"])),
+        2
+    );
+    assert_eq!(lines(&e.ok(Some("beta"), &["receive", "--all"])).len(), 3);
+    assert!(entries(&e.new_dir("beta")).is_empty());
 }
 
 #[test]

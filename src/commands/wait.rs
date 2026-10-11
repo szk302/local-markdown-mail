@@ -109,7 +109,12 @@ pub fn run(ctx: &Ctx, a: &WaitArgs) -> Result<()> {
             > 0;
         if has {
             let opts = Options {
-                max: a.max.map(|m| m as usize),
+                // One message by default, like `lmm receive` (§7.4).
+                max: if a.all {
+                    None
+                } else {
+                    Some(a.max.unwrap_or(1) as usize)
+                },
                 filter: Some(&f),
                 print: true,
                 stop: Some(&sig),

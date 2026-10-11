@@ -211,9 +211,20 @@ fn wait_filters_and_leaves_others() {
         &["wait", "--meta", "version=1.10", "--timeout", "1.2"],
     );
     assert_eq!(code(&o), 3, "{}", show(&o));
-    // Without conditions everything is taken.
+    // Without conditions: one message per run (oldest first) by default,
+    // everything with --all.
     let out = e.ok(Some("beta"), &["wait", "--timeout", "5"]);
+    assert_eq!(lines(&out).len(), 1);
+    assert_eq!(entries(&e.new_dir("beta")).len(), 1);
+    assert_eq!(
+        code(&e.run(Some("beta"), &["wait", "--all", "--max", "2"])),
+        2
+    );
+    let n2 = e.msg_dir("num2", "x\n", &[]);
+    e.post("alpha", &["-t", "beta", n2.to_str().unwrap()]);
+    let out = e.ok(Some("beta"), &["wait", "--all", "--timeout", "5"]);
     assert_eq!(lines(&out).len(), 2);
+    assert!(entries(&e.new_dir("beta")).is_empty());
 }
 
 #[test]

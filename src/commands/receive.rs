@@ -327,7 +327,12 @@ pub fn run(ctx: &Ctx, a: &ReceiveArgs) -> Result<()> {
     let dest = resolve_dest(ctx, &cfg, a.dir.as_deref(), &name)?;
     prepare_dest(&dest)?;
     let opts = Options {
-        max: a.max.map(|m| m as usize),
+        // One message by default, oldest first (§7.1); `--all` lifts the limit.
+        max: if a.all {
+            None
+        } else {
+            Some(a.max.unwrap_or(1) as usize)
+        },
         print: true,
         ..Default::default()
     };

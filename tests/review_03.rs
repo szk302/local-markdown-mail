@@ -70,7 +70,7 @@ fn long_keys_round_trip() {
         let d2 = e.msg_dir(&format!("n{len}"), "x\n", &[]);
         e.post("alpha", &["-t", "beta", "-m", &meta, d2.to_str().unwrap()]);
     }
-    let out = e.ok(Some("beta"), &["receive"]);
+    let out = e.ok(Some("beta"), &["receive", "--all"]);
     assert_eq!(lines(&out).len(), 6);
     assert!(entries(&e.failed_dir("beta")).is_empty());
     let p = &lines(&out)[0];
