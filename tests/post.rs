@@ -117,13 +117,16 @@ fn post_errors() {
         1
     );
     let case = e.msg_dir("case", "x", &[("a.txt", b"1"), ("A.txt", b"2")]);
-    assert_eq!(
-        code(&e.run(
-            Some("alpha"),
-            &["post", "-t", "beta", case.to_str().unwrap()]
-        )),
-        1
-    );
+    // Only a case-sensitive file system can hold both names.
+    if entries(&case).len() == 3 {
+        assert_eq!(
+            code(&e.run(
+                Some("alpha"),
+                &["post", "-t", "beta", case.to_str().unwrap()]
+            )),
+            1
+        );
+    }
     // Bad front matter.
     let bad = e.msg_dir("bad", "---\nlmm_thread_id: 42\n---\n", &[]);
     assert_eq!(

@@ -328,9 +328,17 @@ mod tests {
             matches!(list(&d), Err(MsgError::Invalid(_))),
             "Index.md is not index.md"
         );
+        // On a case-insensitive file system (macOS APFS by default) the two
+        // names are one file, so the collision can't be created there.
         fs::write(d.join("index.md"), "x").unwrap();
-        assert!(matches!(list(&d), Err(MsgError::Invalid(m)) if m.contains("case")));
+        let case_sensitive = fs::read_dir(&d).unwrap().count() == 2;
+        if case_sensitive {
+            assert!(matches!(list(&d), Err(MsgError::Invalid(m)) if m.contains("case")));
+        }
         fs::remove_file(d.join("Index.md")).unwrap();
+        if !case_sensitive {
+            fs::write(d.join("index.md"), "x").unwrap();
+        }
         fs::write(d.join("a.txt"), "yy").unwrap();
         let l = list(&d).unwrap();
         assert_eq!(l.attachments, vec![OsString::from("a.txt")]);
