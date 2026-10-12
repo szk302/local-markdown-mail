@@ -16,7 +16,7 @@
 | `x86_64-apple-darwin.tar.gz` | macOS（Intel） |
 
 ```bash
-v=v0.1.0; t=aarch64-apple-darwin
+v=v0.2.0; t=aarch64-apple-darwin
 curl -LO "https://github.com/szk302/local-markdown-mail/releases/download/$v/lmm-$v-$t.tar.gz"
 curl -LO "https://github.com/szk302/local-markdown-mail/releases/download/$v/SHA256SUMS"
 grep "lmm-$v-$t.tar.gz" SHA256SUMS | shasum -a 256 -c -   # Linux では sha256sum -c -
