@@ -3,6 +3,7 @@
 pub mod box_cmd;
 pub mod draft;
 pub mod hook;
+pub mod init;
 pub mod post;
 pub mod receive;
 pub mod show;
@@ -15,26 +16,35 @@ use crate::cli::{BoxCommand, Cli, Command, ConfigCommand};
 use crate::config::Config;
 use crate::env;
 use crate::error::{IoContext, LmmError, Result};
-use crate::mailbox::Home;
+use crate::mailbox::DataDir;
 
 /// Common execution context.
 pub struct Ctx {
     pub cwd: PathBuf,
-    pub home: Home,
+    pub data_dir: DataDir,
+    pub cfg: Config,
 }
 
 impl Ctx {
-    pub fn from_env() -> Result<Ctx> {
-        let cwd = env::cwd()?;
-        let home = Home::new(env::lmm_home(&cwd)?);
-        Ok(Ctx { cwd, home })
+    /// The configuration (§10) and the data directory (§4.1) for `cwd`.
+    pub fn load(cwd: PathBuf) -> Result<Ctx> {
+        let cfg = Config::load_dirs(&cwd)?;
+        Ctx::with_dirs(cwd, cfg)
+    }
+
+    /// Finish [`Ctx::load`] from what [`Config::load_dirs`] returned.
+    pub fn with_dirs(cwd: PathBuf, mut cfg: Config) -> Result<Ctx> {
+        let data_dir = DataDir::new(cfg.data_dir(&cwd)?);
+        cfg.load_global(&data_dir.root, &cwd)?;
+        Ok(Ctx { cwd, data_dir, cfg })
     }
 }
 
-fn config_show(ctx: &Ctx, dir: Option<&std::path::Path>, origin: bool) -> Result<()> {
+fn config_show(dir: Option<&std::path::Path>, origin: bool) -> Result<()> {
+    let cwd = env::cwd()?;
     let start = match dir {
         Some(d) => {
-            let d = env::absolute_from(&ctx.cwd, d);
+            let d = env::absolute_from(&cwd, d);
             if !std::fs::metadata(&d).is_ok_and(|m| m.is_dir()) {
                 return Err(LmmError::usage(format!(
                     "{} is not a directory",
@@ -46,39 +56,38 @@ fn config_show(ctx: &Ctx, dir: Option<&std::path::Path>, origin: bool) -> Result
             d.canonicalize()
                 .ctx(|| format!("cannot resolve {}", d.display()))?
         }
-        None => ctx.cwd.clone(),
+        None => cwd,
     };
-    let cfg = Config::load(&start, &ctx.home.root)?;
+    // As if run in `start`.
+    let ctx = Ctx::load(start)?;
     let mut out = std::io::stdout().lock();
-    out.write_all(cfg.show(origin).as_bytes())
+    out.write_all(ctx.cfg.show(origin).as_bytes())
         .and_then(|_| out.flush())
         .ctx(|| "cannot write to stdout".to_string())
 }
 
 /// Run a parsed command line.
 pub fn run(cli: &Cli) -> Result<()> {
-    // `lmm hook` must check LMM_NAME before anything that can fail, such as
-    // getting the current directory (§8.3).
-    if let Command::Hook(a) = &cli.command {
-        return hook::run(a);
-    }
-    let ctx = Ctx::from_env()?;
+    let ctx = || Ctx::load(env::cwd()?);
     match &cli.command {
-        Command::Post(a) => post::run(&ctx, a),
-        Command::Draft(a) => draft::run(&ctx, a),
-        Command::Receive(a) => receive::run(&ctx, a),
-        Command::Wait(a) => wait::run(&ctx, a),
-        Command::Show(a) => show::run(&ctx, a),
+        Command::Init(a) => init::run(a),
+        Command::Post(a) => post::run(&ctx()?, a),
+        Command::Draft(a) => draft::run(&ctx()?, a),
+        Command::Receive(a) => receive::run(&ctx()?, a),
+        Command::Wait(a) => wait::run(&ctx()?, a),
+        Command::Show(a) => show::run(&ctx()?, a),
+        // `lmm hook` decides whether it participates before anything else
+        // can fail (§8.3).
         Command::Hook(a) => hook::run(a),
         Command::Box(BoxCommand::Create { address, exist_ok }) => {
-            box_cmd::create(&ctx.home, address, *exist_ok)
+            box_cmd::create(&ctx()?.data_dir, address, *exist_ok)
         }
-        Command::Box(BoxCommand::List) => box_cmd::list(&ctx.home),
+        Command::Box(BoxCommand::List) => box_cmd::list(&ctx()?.data_dir),
         Command::Box(BoxCommand::Remove { address, force }) => {
-            box_cmd::remove(&ctx.home, address, *force)
+            box_cmd::remove(&ctx()?.data_dir, address, *force)
         }
         Command::Config(ConfigCommand::Show { dir, origin }) => {
-            config_show(&ctx, dir.as_deref(), *origin)
+            config_show(dir.as_deref(), *origin)
         }
     }
 }

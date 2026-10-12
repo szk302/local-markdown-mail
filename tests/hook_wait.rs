@@ -161,7 +161,10 @@ fn hook_config_error_is_1() {
     .unwrap();
     let o = e.run(Some("beta"), &["hook"]);
     assert_eq!(code(&o), 1, "{}", show(&o));
-    let o = e.run(Some("beta"), &["hook", e.home.join("x").to_str().unwrap()]);
+    let o = e.run(
+        Some("beta"),
+        &["hook", e.data_dir.join("x").to_str().unwrap()],
+    );
     assert_eq!(code(&o), 1, "{}", show(&o));
 }
 

@@ -13,7 +13,7 @@ pub const BIN: &str = env!("CARGO_BIN_EXE_lmm");
 pub struct Env {
     pub tmp: TempDir,
     pub user_home: PathBuf,
-    pub home: PathBuf,
+    pub data_dir: PathBuf,
     pub work: PathBuf,
 }
 
@@ -22,7 +22,7 @@ impl Env {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
         let user_home = root.join("user");
-        let home = root.join("lmmhome");
+        let data_dir = root.join("lmmdata");
         let work = root.join("work");
         fs::create_dir_all(&user_home).unwrap();
         fs::create_dir_all(&work).unwrap();
@@ -31,7 +31,7 @@ impl Env {
         Env {
             tmp,
             user_home,
-            home,
+            data_dir,
             work,
         }
     }
@@ -45,7 +45,7 @@ impl Env {
             }
         }
         c.env("HOME", &self.user_home)
-            .env("LMM_HOME", &self.home)
+            .env("LMM_DATA_DIR", &self.data_dir)
             .current_dir(&self.work)
             .stdin(Stdio::null());
         if let Some(n) = name {
@@ -91,23 +91,23 @@ impl Env {
     }
 
     pub fn new_dir(&self, addr: &str) -> PathBuf {
-        self.home.join("boxes").join(addr).join("inbox/new")
+        self.data_dir.join("boxes").join(addr).join("inbox/new")
     }
 
     pub fn cur_dir(&self, addr: &str) -> PathBuf {
-        self.home.join("boxes").join(addr).join("inbox/cur")
+        self.data_dir.join("boxes").join(addr).join("inbox/cur")
     }
 
     pub fn failed_dir(&self, addr: &str) -> PathBuf {
-        self.home.join("boxes").join(addr).join("inbox/failed")
+        self.data_dir.join("boxes").join(addr).join("inbox/failed")
     }
 
     pub fn sent_dir(&self, addr: &str) -> PathBuf {
-        self.home.join("boxes").join(addr).join("sent")
+        self.data_dir.join("boxes").join(addr).join("sent")
     }
 
     pub fn tmp_dir(&self, addr: &str) -> PathBuf {
-        self.home.join("boxes").join(addr).join("inbox/.tmp")
+        self.data_dir.join("boxes").join(addr).join("inbox/.tmp")
     }
 }
 

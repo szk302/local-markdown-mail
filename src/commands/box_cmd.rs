@@ -7,7 +7,7 @@ use crate::address;
 use crate::error::{IoContext, LmmError, Result, warn};
 use crate::fsutil;
 use crate::lock::{Kind, Mode};
-use crate::mailbox::{self, Home};
+use crate::mailbox::{self, DataDir};
 
 fn validate(addr: &str) -> Result<()> {
     address::validate(addr).map_err(LmmError::Usage)
@@ -18,12 +18,12 @@ fn ensure_dir(p: &std::path::Path) -> Result<()> {
 }
 
 /// `lmm box create` (§9.1).
-pub fn create(home: &Home, addr: &str, exist_ok: bool) -> Result<()> {
+pub fn create(data_dir: &DataDir, addr: &str, exist_ok: bool) -> Result<()> {
     validate(addr)?;
-    let boxes = home.boxes();
+    let boxes = data_dir.boxes();
     ensure_dir(&boxes)?;
-    let _lock = home.lock(Kind::Box, addr, Mode::Exclusive)?;
-    if home.exists(addr) {
+    let _lock = data_dir.lock(Kind::Box, addr, Mode::Exclusive)?;
+    if data_dir.exists(addr) {
         if exist_ok {
             return Ok(());
         }
@@ -57,7 +57,7 @@ pub fn create(home: &Home, addr: &str, exist_ok: bool) -> Result<()> {
         fsutil::fsync_dir(d).ctx(|| format!("cannot fsync {}", d.display()))?;
     }
     fsutil::fsync_dir(&creating).ctx(|| format!("cannot fsync {}", creating.display()))?;
-    let target = home.mailbox(addr);
+    let target = data_dir.mailbox(addr);
     fsutil::rename_noreplace(&staged, &target)
         .map_err(|e| LmmError::runtime(format!("cannot create {}: {e}", target.display())))?;
     if let Err(e) = fsutil::fsync_dir(&boxes) {
@@ -67,8 +67,8 @@ pub fn create(home: &Home, addr: &str, exist_ok: bool) -> Result<()> {
 }
 
 /// `lmm box list` (§9.2).
-pub fn list(home: &Home) -> Result<()> {
-    let boxes = home.boxes();
+pub fn list(data_dir: &DataDir) -> Result<()> {
+    let boxes = data_dir.boxes();
     let names = match mailbox::sorted_entries(&boxes) {
         Ok(n) => n,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -82,13 +82,13 @@ pub fn list(home: &Home) -> Result<()> {
     let mut out = std::io::stdout().lock();
     for name in names {
         let Some(addr) = name.to_str() else { continue };
-        if !home.exists(addr) {
+        if !data_dir.exists(addr) {
             continue;
         }
-        let new = fsutil::count_visible_entries(&home.new_dir(addr))
-            .ctx(|| format!("cannot read {}", home.new_dir(addr).display()))?;
-        let failed = fsutil::count_visible_entries(&home.failed_dir(addr))
-            .ctx(|| format!("cannot read {}", home.failed_dir(addr).display()))?;
+        let new = fsutil::count_visible_entries(&data_dir.new_dir(addr))
+            .ctx(|| format!("cannot read {}", data_dir.new_dir(addr).display()))?;
+        let failed = fsutil::count_visible_entries(&data_dir.failed_dir(addr))
+            .ctx(|| format!("cannot read {}", data_dir.failed_dir(addr).display()))?;
         writeln!(out, "{addr}\tnew={new}\tfailed={failed}")
             .ctx(|| "cannot write to stdout".to_string())?;
     }
@@ -96,18 +96,18 @@ pub fn list(home: &Home) -> Result<()> {
 }
 
 /// `lmm box remove` (§9.3).
-pub fn remove(home: &Home, addr: &str, force: bool) -> Result<()> {
+pub fn remove(data_dir: &DataDir, addr: &str, force: bool) -> Result<()> {
     validate(addr)?;
-    let boxes = home.boxes();
+    let boxes = data_dir.boxes();
     let removing = boxes.join(".removing");
     let staged = removing.join(addr);
     let missing = || LmmError::runtime(format!("mailbox {addr:?} does not exist"));
-    if !home.exists(addr) && fs::symlink_metadata(&staged).is_err() {
+    if !data_dir.exists(addr) && fs::symlink_metadata(&staged).is_err() {
         return Err(missing());
     }
-    let _recv = home.lock(Kind::Receive, addr, Mode::Exclusive)?;
-    let _box = home.lock(Kind::Box, addr, Mode::Exclusive)?;
-    if !home.exists(addr) {
+    let _recv = data_dir.lock(Kind::Receive, addr, Mode::Exclusive)?;
+    let _box = data_dir.lock(Kind::Box, addr, Mode::Exclusive)?;
+    if !data_dir.exists(addr) {
         // A previous removal was committed (step 2) but stopped before
         // step 3: finish it (§9.3).
         if fs::symlink_metadata(&staged).is_err() {
@@ -117,11 +117,11 @@ pub fn remove(home: &Home, addr: &str, force: bool) -> Result<()> {
             .ctx(|| format!("cannot delete leftover {}", staged.display()))?;
         return Ok(());
     }
-    let new_dir = home.new_dir(addr);
+    let new_dir = data_dir.new_dir(addr);
     let pending = fsutil::count_visible_entries(&new_dir)
         .ctx(|| format!("cannot read {}", new_dir.display()))?;
     // Keep guards of abandoned work directories until the mailbox is gone.
-    let (live, _abandoned) = mailbox::probe_workdirs(home, addr)?;
+    let (live, _abandoned) = mailbox::probe_workdirs(data_dir, addr)?;
     if !force {
         if pending > 0 {
             return Err(LmmError::runtime(format!(
@@ -138,10 +138,10 @@ pub fn remove(home: &Home, addr: &str, force: bool) -> Result<()> {
     ensure_dir(&removing)?;
     fsutil::remove_dir_all_if_exists(&staged)
         .ctx(|| format!("cannot remove leftover {}", staged.display()))?;
-    fsutil::rename_noreplace(&home.mailbox(addr), &staged).map_err(|e| {
+    fsutil::rename_noreplace(&data_dir.mailbox(addr), &staged).map_err(|e| {
         LmmError::runtime(format!(
             "cannot remove {}: {e}",
-            home.mailbox(addr).display()
+            data_dir.mailbox(addr).display()
         ))
     })?;
     if let Err(e) = fsutil::fsync_dir(&boxes) {

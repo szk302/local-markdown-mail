@@ -122,7 +122,7 @@ fn hook_without_name_ignores_missing_cwd_and_home() {
     let o = e
         .cmd(None)
         .env_remove("HOME")
-        .env_remove("LMM_HOME")
+        .env_remove("LMM_DATA_DIR")
         .arg("hook")
         .output()
         .unwrap();
@@ -139,20 +139,14 @@ fn hidden_entries_are_not_counted() {
         e.ok(None, &["box", "list"]),
         "alpha\tnew=0\tfailed=0\nbeta\tnew=0\tfailed=0\n"
     );
-    // hook takes the cheap path: no config read, no receive directory.
-    fs::write(
-        e.work.join(".lmm.yml"),
-        "root: true\nhook:\n  max_messages: 99\n",
-    )
-    .unwrap();
+    // hook takes the cheap path: no receive directory.
     let o = e.run(Some("beta"), &["hook"]);
     assert_eq!(code(&o), 0, "{}", show(&o));
     assert!(o.stdout.is_empty() && o.stderr.is_empty(), "{}", show(&o));
     assert!(!e.work.join(".lmm-inbox").exists());
-    fs::write(e.work.join(".lmm.yml"), "root: true\n").unwrap();
     // box remove does not need --force.
     e.ok(None, &["box", "remove", "beta"]);
-    assert!(!e.home.join("boxes/beta").exists());
+    assert!(!e.data_dir.join("boxes/beta").exists());
 }
 
 /// L5: a hand-placed message with a long lmm_thread_id is received.

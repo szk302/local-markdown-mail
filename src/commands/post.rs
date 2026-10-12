@@ -8,13 +8,12 @@ use std::path::{Path, PathBuf};
 use crate::address;
 use crate::cli::PostArgs;
 use crate::commands::Ctx;
-use crate::config::Config;
 use crate::env;
 use crate::error::{IoContext, LmmError, Result, warn};
 use crate::frontmatter::{self, FORWARD_KEYS};
 use crate::fsutil::{self, CopyError};
 use crate::lock::{Kind, Mode};
-use crate::mailbox::{self, Home, WorkDir};
+use crate::mailbox::{self, DataDir, WorkDir};
 use crate::message::{self, INDEX};
 use crate::yaml::{Map, Node};
 
@@ -136,7 +135,7 @@ pub enum Target {
 
 /// Write a message into a work directory of `addr` and publish it (§6.4 steps 4-6).
 fn deliver(
-    home: &Home,
+    data_dir: &DataDir,
     addr: &str,
     index: &[u8],
     src_dir: &Path,
@@ -144,7 +143,7 @@ fn deliver(
     base: &str,
     target: Target,
 ) -> Result<PathBuf> {
-    let wd = WorkDir::create(home, addr)?;
+    let wd = WorkDir::create(data_dir, addr)?;
     let msg = wd.msg();
     fsutil::write_new(&msg.join(INDEX), index)
         .ctx(|| format!("cannot write {}", msg.join(INDEX).display()))?;
@@ -169,15 +168,15 @@ fn deliver(
     }
     fsutil::fsync_dir(&msg).ctx(|| format!("cannot fsync {}", msg.display()))?;
 
-    let lock = home.lock(Kind::Box, addr, Mode::Shared)?;
-    if !home.exists(addr) {
+    let lock = data_dir.lock(Kind::Box, addr, Mode::Shared)?;
+    if !data_dir.exists(addr) {
         return Err(LmmError::runtime(format!(
             "mailbox {addr:?} was removed during delivery"
         )));
     }
     let (dir, other) = match target {
-        Target::Inbox => (home.new_dir(addr), Some(home.cur_dir(addr))),
-        Target::Sent => (home.sent_dir(addr), None),
+        Target::Inbox => (data_dir.new_dir(addr), Some(data_dir.cur_dir(addr))),
+        Target::Sent => (data_dir.sent_dir(addr), None),
     };
     let path = fsutil::rename_unique(&msg, &dir, base.as_ref(), |n| {
         other.as_deref().is_some_and(|o| mailbox::name_exists(o, n))
@@ -195,8 +194,8 @@ fn deliver(
 }
 
 pub fn run(ctx: &Ctx, a: &PostArgs) -> Result<()> {
-    let name = env::require_name()?;
-    env::check_no_newline(&ctx.home.root, "LMM_HOME")?;
+    let name = ctx.cfg.require_name()?;
+    env::check_no_newline(&ctx.data_dir.root, "data directory")?;
 
     // Usage checks before touching anything.
     if a.dir.as_os_str() == "-" {
@@ -233,8 +232,8 @@ pub fn run(ctx: &Ctx, a: &PostArgs) -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
 
     // 1. Sender.
-    ctx.home.require(&name, "sender")?;
-    let cfg = Config::load(&ctx.cwd, &ctx.home.root)?;
+    ctx.data_dir.require(&name, "sender")?;
+    let cfg = &ctx.cfg;
 
     // 2. Input and values.
     let listing = message::list_followed(&dir).map_err(|e| {
@@ -335,7 +334,7 @@ pub fn run(ctx: &Ctx, a: &PostArgs) -> Result<()> {
         })?;
 
     // 3. Validation.
-    if !ctx.home.exists(&to) {
+    if !ctx.data_dir.exists(&to) {
         return Err(LmmError::runtime(format!(
             "destination mailbox {to:?} does not exist; create it with `lmm box create {to}`"
         )));
@@ -351,7 +350,7 @@ pub fn run(ctx: &Ctx, a: &PostArgs) -> Result<()> {
     // 4-5. Write and publish.
     let base = message::dir_name(created, &name, &to, &id);
     let path = deliver(
-        &ctx.home,
+        &ctx.data_dir,
         &to,
         &index,
         &dir,
@@ -362,7 +361,7 @@ pub fn run(ctx: &Ctx, a: &PostArgs) -> Result<()> {
 
     // 6. Sent copy (failures are warnings).
     if let Err(e) = deliver(
-        &ctx.home,
+        &ctx.data_dir,
         &name,
         &index,
         &dir,

@@ -52,8 +52,9 @@ pub struct Guard {
 }
 
 /// Path of a mailbox lock file.
-pub fn lock_path(home: &Path, kind: Kind, addr: &str) -> PathBuf {
-    home.join("locks")
+pub fn lock_path(data_dir: &Path, kind: Kind, addr: &str) -> PathBuf {
+    data_dir
+        .join("locks")
         .join(kind.dir())
         .join(format!("{addr}.lock"))
 }
@@ -124,27 +125,27 @@ fn lock_file_until(
 
 /// Acquire a mailbox lock, waiting up to `timeout` (error on expiry).
 pub fn acquire_with(
-    home: &Path,
+    data_dir: &Path,
     kind: Kind,
     addr: &str,
     mode: Mode,
     timeout: Duration,
 ) -> Result<Guard> {
-    acquire_interruptible(home, kind, addr, mode, timeout, None)
+    acquire_interruptible(data_dir, kind, addr, mode, timeout, None)
 }
 
 /// Acquire a mailbox lock, waiting up to `timeout`. While waiting, a
 /// non-zero signal number in `stop` aborts with [`LmmError::Signal`]
 /// (`lmm wait`, §7.4).
 pub fn acquire_interruptible(
-    home: &Path,
+    data_dir: &Path,
     kind: Kind,
     addr: &str,
     mode: Mode,
     timeout: Duration,
     stop: Option<&AtomicUsize>,
 ) -> Result<Guard> {
-    let path = lock_path(home, kind, addr);
+    let path = lock_path(data_dir, kind, addr);
     let file = open_lock_file(&path, true)
         .map_err(|e| LmmError::runtime(format!("cannot open lock file {}: {e}", path.display())))?;
     match lock_file_until(&file, mode, Some(timeout), stop) {
@@ -163,13 +164,13 @@ pub fn acquire_interruptible(
 }
 
 /// Acquire a mailbox lock with the default timeout (10 s).
-pub fn acquire(home: &Path, kind: Kind, addr: &str, mode: Mode) -> Result<Guard> {
-    acquire_with(home, kind, addr, mode, DEFAULT_TIMEOUT)
+pub fn acquire(data_dir: &Path, kind: Kind, addr: &str, mode: Mode) -> Result<Guard> {
+    acquire_with(data_dir, kind, addr, mode, DEFAULT_TIMEOUT)
 }
 
 /// Try a mailbox lock once without waiting. `Ok(None)` if busy.
-pub fn try_acquire(home: &Path, kind: Kind, addr: &str, mode: Mode) -> Result<Option<Guard>> {
-    let path = lock_path(home, kind, addr);
+pub fn try_acquire(data_dir: &Path, kind: Kind, addr: &str, mode: Mode) -> Result<Option<Guard>> {
+    let path = lock_path(data_dir, kind, addr);
     let file = open_lock_file(&path, true)
         .map_err(|e| LmmError::runtime(format!("cannot open lock file {}: {e}", path.display())))?;
     match lock_file(&file, mode, None) {
@@ -233,17 +234,17 @@ mod tests {
     #[test]
     fn shared_locks_coexist_and_exclusive_times_out() {
         let t = tempfile::tempdir().unwrap();
-        let home = t.path();
-        let a = acquire(home, Kind::Box, "alpha", Mode::Shared).unwrap();
-        let b = acquire(home, Kind::Box, "alpha", Mode::Shared).unwrap();
+        let data_dir = t.path();
+        let a = acquire(data_dir, Kind::Box, "alpha", Mode::Shared).unwrap();
+        let b = acquire(data_dir, Kind::Box, "alpha", Mode::Shared).unwrap();
         assert!(
-            try_acquire(home, Kind::Box, "alpha", Mode::Exclusive)
+            try_acquire(data_dir, Kind::Box, "alpha", Mode::Exclusive)
                 .unwrap()
                 .is_none()
         );
         let start = Instant::now();
         let r = acquire_with(
-            home,
+            data_dir,
             Kind::Box,
             "alpha",
             Mode::Exclusive,
@@ -253,25 +254,25 @@ mod tests {
         assert!(start.elapsed() >= Duration::from_millis(200));
         // Different kinds don't interfere.
         assert!(
-            try_acquire(home, Kind::Receive, "alpha", Mode::Exclusive)
+            try_acquire(data_dir, Kind::Receive, "alpha", Mode::Exclusive)
                 .unwrap()
                 .is_some()
         );
         drop(a);
         drop(b);
         assert!(
-            try_acquire(home, Kind::Box, "alpha", Mode::Exclusive)
+            try_acquire(data_dir, Kind::Box, "alpha", Mode::Exclusive)
                 .unwrap()
                 .is_some()
         );
-        assert!(lock_path(home, Kind::Box, "alpha").exists());
+        assert!(lock_path(data_dir, Kind::Box, "alpha").exists());
     }
 
     #[test]
     fn interruptible_acquire_stops_on_signal() {
         let t = tempfile::tempdir().unwrap();
-        let home = t.path();
-        let _held = acquire(home, Kind::Receive, "a", Mode::Exclusive).unwrap();
+        let data_dir = t.path();
+        let _held = acquire(data_dir, Kind::Receive, "a", Mode::Exclusive).unwrap();
         let stop = AtomicUsize::new(0);
         std::thread::scope(|sc| {
             sc.spawn(|| {
@@ -280,7 +281,7 @@ mod tests {
             });
             let start = Instant::now();
             let r = acquire_interruptible(
-                home,
+                data_dir,
                 Kind::Receive,
                 "a",
                 Mode::Exclusive,

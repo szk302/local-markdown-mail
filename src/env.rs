@@ -1,11 +1,10 @@
-//! Environment variables and path helpers (§3.2, §4.1, §7.2, §12.6).
+//! Environment variables and path helpers (§7.2, §12.6).
 
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
-use crate::address;
 use crate::error::{LmmError, Result};
 
 /// Read an environment variable as raw bytes, treating an empty value as
@@ -15,18 +14,6 @@ pub fn var_os(name: &str) -> Option<OsString> {
     match env::var_os(name) {
         Some(v) if !v.is_empty() => Some(v),
         _ => None,
-    }
-}
-
-/// Read an environment variable that must be UTF-8 text. A non-UTF-8 value
-/// is a usage error (never treated as unset).
-pub fn var(name: &str) -> Result<Option<String>> {
-    match var_os(name) {
-        None => Ok(None),
-        Some(v) => v
-            .into_string()
-            .map(Some)
-            .map_err(|_| LmmError::usage(format!("{name} is not valid UTF-8"))),
     }
 }
 
@@ -58,30 +45,6 @@ pub fn absolute_from(base: &Path, p: &Path) -> PathBuf {
         }
     }
     out
-}
-
-/// Data directory (§4.1): `LMM_HOME` or `~/.lmm`, as an absolute path.
-pub fn lmm_home(cwd: &Path) -> Result<PathBuf> {
-    match var_os("LMM_HOME") {
-        Some(h) => Ok(absolute_from(cwd, Path::new(&h))),
-        None => Ok(home_dir()?.join(".lmm")),
-    }
-}
-
-/// `LMM_NAME` (§3.2). `Ok(None)` when unset. Invalid values are usage errors.
-pub fn lmm_name() -> Result<Option<String>> {
-    match var("LMM_NAME")? {
-        None => Ok(None),
-        Some(n) => {
-            address::validate(&n).map_err(|e| LmmError::usage(format!("LMM_NAME: {e}")))?;
-            Ok(Some(n))
-        }
-    }
-}
-
-/// `LMM_NAME`, required.
-pub fn require_name() -> Result<String> {
-    lmm_name()?.ok_or_else(|| LmmError::usage("LMM_NAME is not set"))
 }
 
 /// Paths written to stdout must not contain newlines (§12.6).
@@ -177,9 +140,9 @@ pub fn is_inside(p: &Path, dir: &Path) -> bool {
     }
 }
 
-/// §6.7 / §7.2: `p` must not point inside the data directory `home`, and
+/// §6.7 / §7.2: `p` must not point inside the data directory `data_dir`, and
 /// must be resolvable. Usage error otherwise.
-pub fn check_outside_home(p: &Path, home: &Path, what: &str) -> Result<()> {
+pub fn check_outside_data_dir(p: &Path, data_dir: &Path, what: &str) -> Result<()> {
     let explain = |e: ResolveError, whose: &Path| match e {
         ResolveError::Dangling(link) => LmmError::usage(format!(
             "{what} {} goes through a dangling symbolic link {}; cannot check whether it is inside the data directory",
@@ -194,12 +157,12 @@ pub fn check_outside_home(p: &Path, home: &Path, what: &str) -> Result<()> {
         )),
     };
     let rp = resolve_physical(p).map_err(|e| explain(e, p))?;
-    let rh = resolve_physical(home).map_err(|e| explain(e, home))?;
+    let rh = resolve_physical(data_dir).map_err(|e| explain(e, data_dir))?;
     if rp.starts_with(&rh) {
         return Err(LmmError::usage(format!(
             "{what} {} is inside the data directory {}",
             p.display(),
-            home.display()
+            data_dir.display()
         )));
     }
     Ok(())
@@ -224,15 +187,15 @@ mod tests {
     #[test]
     fn inside_detection() {
         let t = tempfile::tempdir().unwrap();
-        let home = t.path().join("home");
-        std::fs::create_dir(&home).unwrap();
+        let data_dir = t.path().join("data_dir");
+        std::fs::create_dir(&data_dir).unwrap();
         let link = t.path().join("link");
-        std::os::unix::fs::symlink(&home, &link).unwrap();
-        assert!(is_inside(&home.join("x/y"), &home));
-        assert!(is_inside(&link.join("x"), &home));
-        assert!(is_inside(&t.path().join("other/../home/z"), &home));
-        assert!(!is_inside(&t.path().join("other"), &home));
-        assert!(!is_inside(&t.path().join("homes"), &home));
+        std::os::unix::fs::symlink(&data_dir, &link).unwrap();
+        assert!(is_inside(&data_dir.join("x/y"), &data_dir));
+        assert!(is_inside(&link.join("x"), &data_dir));
+        assert!(is_inside(&t.path().join("other/../data_dir/z"), &data_dir));
+        assert!(!is_inside(&t.path().join("other"), &data_dir));
+        assert!(!is_inside(&t.path().join("data_dirs"), &data_dir));
     }
 
     #[test]
@@ -256,15 +219,15 @@ mod tests {
             resolve_physical(&root.join("nope/x")).unwrap(),
             root.join("nope/x")
         );
-        assert!(check_outside_home(&root.join("dang/x"), &root.join("home"), "d").is_err());
-        assert!(check_outside_home(&root.join("ok/x"), &root.join("home"), "d").is_ok());
+        assert!(check_outside_data_dir(&root.join("dang/x"), &root.join("data_dir"), "d").is_err());
+        assert!(check_outside_data_dir(&root.join("ok/x"), &root.join("data_dir"), "d").is_ok());
         // A loop can't be judged.
         std::os::unix::fs::symlink(root.join("loop"), root.join("loop")).unwrap();
         assert!(matches!(
             resolve_physical(&root.join("loop/x")),
             Err(ResolveError::Other(..))
         ));
-        assert!(is_inside(&root.join("loop/x"), &root.join("home")));
+        assert!(is_inside(&root.join("loop/x"), &root.join("data_dir")));
     }
 
     /// R03-1: a symlink reached through `..` after a missing component.
@@ -272,13 +235,13 @@ mod tests {
     fn dotdot_after_missing_component_resolves_later_links() {
         let t = tempfile::tempdir().unwrap();
         let root = t.path().canonicalize().unwrap();
-        let home = root.join("data");
-        std::fs::create_dir(&home).unwrap();
-        std::os::unix::fs::symlink(&home, root.join("data-link")).unwrap();
+        let data_dir = root.join("data");
+        std::fs::create_dir(&data_dir).unwrap();
+        std::os::unix::fs::symlink(&data_dir, root.join("data-link")).unwrap();
         let p = root.join("not-yet/../data-link/boxes/x");
-        assert_eq!(resolve_physical(&p).unwrap(), home.join("boxes/x"));
-        assert!(is_inside(&p, &home));
-        assert!(check_outside_home(&p, &home, "d").is_err());
+        assert_eq!(resolve_physical(&p).unwrap(), data_dir.join("boxes/x"));
+        assert!(is_inside(&p, &data_dir));
+        assert!(check_outside_data_dir(&p, &data_dir, "d").is_err());
         assert!(!root.join("not-yet").exists());
         // `..` above a symlinked directory goes to the target's parent,
         // as the kernel does.

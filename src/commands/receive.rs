@@ -9,24 +9,24 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::cli::ReceiveArgs;
 use crate::commands::Ctx;
-use crate::config::Config;
 use crate::env;
 use crate::error::{LmmError, Result, error_log, warn};
 use crate::fsutil::{self, CopyError};
 use crate::lock::{self, Kind, Mode};
-use crate::mailbox::{self, Home};
+use crate::mailbox::{self, DataDir};
 use crate::message::{self, INDEX, Inspected, MsgError};
 
 /// Resolve the receive directory (§7.2). Errors are usage errors.
-pub fn resolve_dest(ctx: &Ctx, cfg: &Config, arg: Option<&Path>, name: &str) -> Result<PathBuf> {
+pub fn resolve_dest(ctx: &Ctx, arg: Option<&Path>, name: &str) -> Result<PathBuf> {
     let p = match arg {
         Some(a) => env::absolute_from(&ctx.cwd, a),
-        None => cfg
+        None => ctx
+            .cfg
             .receive_dir
             .resolve_path("receive.dir", Some(name), &ctx.cwd)?,
     };
     env::check_no_newline(&p, "receive directory")?;
-    env::check_outside_home(&p, &ctx.home.root, "receive directory")?;
+    env::check_outside_data_dir(&p, &ctx.data_dir.root, "receive directory")?;
     Ok(p)
 }
 
@@ -134,7 +134,7 @@ fn copy_into(src: &Path, files: &[OsString], tmp: &Path) -> std::result::Result<
 
 /// Extract one inspected message (§7.3 steps i-iv). Returns the path.
 fn extract(
-    home: &Home,
+    data_dir: &DataDir,
     name: &str,
     src: &Path,
     entry: &OsStr,
@@ -197,7 +197,7 @@ fn extract(
         break target;
     };
     // iv. Move the original to cur/.
-    let cur = home.cur_dir(name);
+    let cur = data_dir.cur_dir(name);
     fsutil::rename_unique(src, &cur, entry, |_| false).map_err(|e| {
         ExtractError::Message(format!(
             "cannot move {} to {}: {e}",
@@ -205,7 +205,7 @@ fn extract(
             cur.display()
         ))
     })?;
-    for d in [home.new_dir(name), cur] {
+    for d in [data_dir.new_dir(name), cur] {
         if let Err(e) = fsutil::fsync_dir(&d) {
             warn(format!("cannot fsync {}: {e}", d.display()));
         }
@@ -213,8 +213,8 @@ fn extract(
     Ok(target)
 }
 
-fn move_to_failed(home: &Home, name: &str, src: &Path, entry: &OsStr, reason: &str) -> bool {
-    let failed = home.failed_dir(name);
+fn move_to_failed(data_dir: &DataDir, name: &str, src: &Path, entry: &OsStr, reason: &str) -> bool {
+    let failed = data_dir.failed_dir(name);
     match fsutil::rename_unique(src, &failed, entry, |_| false) {
         Ok(p) => {
             error_log(format!(
@@ -239,8 +239,8 @@ fn move_to_failed(home: &Home, name: &str, src: &Path, entry: &OsStr, reason: &s
 }
 
 /// Process `new/` (§7.3 step 2). The receive lock must be held.
-pub fn process(home: &Home, name: &str, dest: &Path, opts: &Options) -> Result<Outcome> {
-    let new = home.new_dir(name);
+pub fn process(data_dir: &DataDir, name: &str, dest: &Path, opts: &Options) -> Result<Outcome> {
+    let new = data_dir.new_dir(name);
     let entries = mailbox::sorted_entries(&new)
         .map_err(|e| LmmError::runtime(format!("cannot read {}: {e}", new.display())))?;
     let mut out = Outcome::default();
@@ -257,7 +257,7 @@ pub fn process(home: &Home, name: &str, dest: &Path, opts: &Options) -> Result<O
         let insp = match message::inspect(&src) {
             Ok(i) => i,
             Err(MsgError::Invalid(reason)) => {
-                if move_to_failed(home, name, &src, &entry, &reason) {
+                if move_to_failed(data_dir, name, &src, &entry, &reason) {
                     out.moved_to_failed += 1;
                 } else {
                     out.failures += 1;
@@ -279,7 +279,7 @@ pub fn process(home: &Home, name: &str, dest: &Path, opts: &Options) -> Result<O
         {
             continue;
         }
-        match extract(home, name, &src, &entry, &insp, dest) {
+        match extract(data_dir, name, &src, &entry, &insp, dest) {
             Ok(p) => {
                 if opts.print {
                     let mut so = io::stdout().lock();
@@ -306,25 +306,29 @@ pub fn process(home: &Home, name: &str, dest: &Path, opts: &Options) -> Result<O
 }
 
 /// Lock, re-check, clean up, and process (§7.3 steps 1-3).
-pub fn receive_locked(home: &Home, name: &str, dest: &Path, opts: &Options) -> Result<Outcome> {
+pub fn receive_locked(
+    data_dir: &DataDir,
+    name: &str,
+    dest: &Path,
+    opts: &Options,
+) -> Result<Outcome> {
     let _lock = lock::acquire_interruptible(
-        &home.root,
+        &data_dir.root,
         Kind::Receive,
         name,
         Mode::Exclusive,
         lock::DEFAULT_TIMEOUT,
         opts.stop,
     )?;
-    home.require(name, "your")?;
-    mailbox::cleanup_abandoned(home, name);
-    process(home, name, dest, opts)
+    data_dir.require(name, "your")?;
+    mailbox::cleanup_abandoned(data_dir, name);
+    process(data_dir, name, dest, opts)
 }
 
 pub fn run(ctx: &Ctx, a: &ReceiveArgs) -> Result<()> {
-    let name = env::require_name()?;
-    ctx.home.require(&name, "your")?;
-    let cfg = Config::load(&ctx.cwd, &ctx.home.root)?;
-    let dest = resolve_dest(ctx, &cfg, a.dir.as_deref(), &name)?;
+    let name = ctx.cfg.require_name()?;
+    ctx.data_dir.require(&name, "your")?;
+    let dest = resolve_dest(ctx, a.dir.as_deref(), &name)?;
     prepare_dest(&dest)?;
     let opts = Options {
         // One message by default, oldest first (§7.1); `--all` lifts the limit.
@@ -336,7 +340,7 @@ pub fn run(ctx: &Ctx, a: &ReceiveArgs) -> Result<()> {
         print: true,
         ..Default::default()
     };
-    let out = receive_locked(&ctx.home, &name, &dest, &opts)?;
+    let out = receive_locked(&ctx.data_dir, &name, &dest, &opts)?;
     if out.failures + out.moved_to_failed > 0 {
         return Err(LmmError::Exit(1));
     }

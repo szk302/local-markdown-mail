@@ -87,7 +87,7 @@ fn post_fails_cleanly_when_box_removed_before_publish() {
         .write(true)
         .create(true)
         .truncate(false)
-        .open(e.home.join("locks/box/beta.lock"))
+        .open(e.data_dir.join("locks/box/beta.lock"))
         .unwrap();
     lock.lock().unwrap();
     let child = e
@@ -103,13 +103,13 @@ fn post_fails_cleanly_when_box_removed_before_publish() {
     assert_eq!(entries(&tmp).len(), 1);
     // Remove the mailbox the way `lmm box remove` would (we already hold
     // the box lock, so emulate steps 2-3 directly).
-    let staged = e.home.join("boxes/.removing/beta");
+    let staged = e.data_dir.join("boxes/.removing/beta");
     fs::create_dir_all(staged.parent().unwrap()).unwrap();
-    fs::rename(e.home.join("boxes/beta"), &staged).unwrap();
+    fs::rename(e.data_dir.join("boxes/beta"), &staged).unwrap();
     drop(lock);
     let o = child.wait_with_output().unwrap();
     assert_eq!(code(&o), 1, "{}", show(&o));
-    assert!(!e.home.join("boxes/beta").exists(), "not recreated");
+    assert!(!e.data_dir.join("boxes/beta").exists(), "not recreated");
     assert!(o.stdout.is_empty());
     fs::remove_dir_all(staged).unwrap();
 }
@@ -123,7 +123,7 @@ fn box_remove_waits_for_publishing_and_refuses_live_sends() {
         .write(true)
         .create(true)
         .truncate(false)
-        .open(e.home.join("locks/box/beta.lock"))
+        .open(e.data_dir.join("locks/box/beta.lock"))
         .unwrap();
     lock.lock().unwrap();
     let child = e
@@ -153,7 +153,7 @@ fn stopped_sender_work_dir_survives_cleanup() {
         .write(true)
         .create(true)
         .truncate(false)
-        .open(e.home.join("locks/box/beta.lock"))
+        .open(e.data_dir.join("locks/box/beta.lock"))
         .unwrap();
     lock.lock().unwrap();
     let child = e

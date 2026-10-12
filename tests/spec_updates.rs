@@ -172,7 +172,7 @@ fn hook_forward_wait_bounded_by_remaining_timeout() {
 fn dangling_symlink_destinations_are_rejected() {
     let e = setup();
     send(&e);
-    std::os::unix::fs::symlink(e.home.join("boxes/newdir"), e.work.join("dang")).unwrap();
+    std::os::unix::fs::symlink(e.data_dir.join("boxes/newdir"), e.work.join("dang")).unwrap();
     for dir in ["dang", "dang/sub"] {
         let o = e.run(Some("beta"), &["receive", dir]);
         assert_eq!(code(&o), 2, "{dir}: {}", show(&o));
@@ -182,7 +182,7 @@ fn dangling_symlink_destinations_are_rejected() {
         let o = e.run(Some("beta"), &["draft", dir]);
         assert_eq!(code(&o), 2, "{dir}: {}", show(&o));
     }
-    assert!(!e.home.join("boxes/newdir").exists());
+    assert!(!e.data_dir.join("boxes/newdir").exists());
     assert_eq!(entries(&e.new_dir("beta")).len(), 1);
     // A symlink whose target exists still works.
     fs::create_dir(e.work.join("real")).unwrap();

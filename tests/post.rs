@@ -62,7 +62,7 @@ fn post_errors() {
     let o = e.run(Some("alpha"), &["post", "-t", "gamma", ds]);
     assert_eq!(code(&o), 1);
     assert!(String::from_utf8_lossy(&o.stderr).contains("lmm box create gamma"));
-    assert!(!e.home.join("boxes/gamma").exists());
+    assert!(!e.data_dir.join("boxes/gamma").exists());
     // Invalid destination address.
     assert_eq!(code(&e.run(Some("alpha"), &["post", "-t", "../x", ds])), 2);
     // Multiple -t.

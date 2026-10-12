@@ -109,18 +109,18 @@ fn receive_errors() {
     let o = e.run(Some("gamma"), &["receive"]);
     assert_eq!(code(&o), 1);
     assert!(String::from_utf8_lossy(&o.stderr).contains("lmm box create gamma"));
-    assert!(!e.home.join("locks/receive/gamma.lock").exists());
+    assert!(!e.data_dir.join("locks/receive/gamma.lock").exists());
     // Destination inside the data directory.
     send(&e, "x\n");
-    let inside = e.home.join("boxes/beta/inbox/cur");
+    let inside = e.data_dir.join("boxes/beta/inbox/cur");
     let o = e.run(Some("beta"), &["receive", inside.to_str().unwrap()]);
     assert_eq!(code(&o), 2, "{}", show(&o));
     // Via a symlink to the data directory.
     let link = e.work.join("link");
-    std::os::unix::fs::symlink(&e.home, &link).unwrap();
+    std::os::unix::fs::symlink(&e.data_dir, &link).unwrap();
     let o = e.run(Some("beta"), &["receive", "link/x/y"]);
     assert_eq!(code(&o), 2, "{}", show(&o));
-    assert!(!e.home.join("x").exists());
+    assert!(!e.data_dir.join("x").exists());
     // Newline in destination.
     assert_eq!(code(&e.run(Some("beta"), &["receive", "a\nb"])), 2);
     assert_eq!(entries(&e.new_dir("beta")).len(), 1);
@@ -212,7 +212,7 @@ fn abandoned_work_dirs_are_cleaned_but_live_ones_kept() {
     let prep = fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open(e.home.join("locks/prepare/beta.lock"))
+        .open(e.data_dir.join("locks/prepare/beta.lock"))
         .unwrap();
     prep.lock_shared().unwrap();
     e.ok(Some("beta"), &["receive"]);
