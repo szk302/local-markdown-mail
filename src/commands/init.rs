@@ -11,6 +11,7 @@ use crate::config::Config;
 use crate::env;
 use crate::error::{IoContext, LmmError, Result};
 use crate::fsutil;
+use crate::yaml;
 
 /// The shared config `lmm init --root` writes.
 const SHARED: &str = "\
@@ -27,12 +28,14 @@ const IGNORED: [&str; 2] = [".lmm/", ".lmm.local.yml"];
 
 /// The personal config for `name`. Without `--root`, `root: false` cancels
 /// the committed `root: true` so that the project above is read (§10.2).
+/// The address is emitted as a YAML string: valid addresses such as `123`,
+/// `true` or `null` would otherwise be read back as other types.
 fn personal(root: bool, name: &str) -> String {
     let mut s = String::new();
     if !root {
         s.push_str("root: false\n");
     }
-    s.push_str(&format!("name: {name}\n"));
+    s.push_str(&format!("name: {}\n", yaml::emit_str(name)));
     s
 }
 

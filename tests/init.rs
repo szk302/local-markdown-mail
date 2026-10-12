@@ -98,6 +98,38 @@ fn root_then_join() {
     assert!(proj.join(".lmm/boxes/other").is_dir());
 }
 
+/// Valid addresses that a YAML parser would read as numbers, booleans or
+/// null are written quoted, so the generated config loads (review R1).
+#[test]
+fn addresses_that_look_like_other_yaml_types() {
+    let e = Env::new();
+    for name in ["123", "true", "false", "null", "0x10", "0o17", "1.5", "1e3"] {
+        let proj = e.work.join(format!("proj-{name}"));
+        let wt = proj.join("wt");
+        fs::create_dir_all(&wt).unwrap();
+        for (dir, args) in [
+            (&proj, &["init", "--root", "--name", name][..]),
+            (&wt, &["init", "--name", name][..]),
+        ] {
+            let local = dir.join(".lmm.local.yml");
+            assert_eq!(ok_in(&e, dir, args).last(), Some(&local), "{args:?}");
+            let line = format!("name: \"{name}\"\n");
+            assert!(read(&local).ends_with(&line), "{}", read(&local));
+            // The config loads, with the address as a string.
+            let o = run_in(&e, dir, &["config", "show"]);
+            assert!(o.status.success(), "{args:?}: {}", show(&o));
+            assert!(
+                String::from_utf8_lossy(&o.stdout).contains(&line),
+                "{}",
+                show(&o)
+            );
+            // Running it again changes nothing and succeeds.
+            assert!(ok_in(&e, dir, args).is_empty(), "{args:?}");
+        }
+        assert!(proj.join(format!(".lmm/boxes/{name}")).is_dir(), "{name}");
+    }
+}
+
 #[test]
 fn init_errors_change_nothing() {
     let e = Env::new();
