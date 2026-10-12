@@ -39,6 +39,8 @@ pub struct Val<T> {
     pub origin: Origin,
     /// Directory of the file the value came from (for `{config_dir}`).
     pub config_dir: Option<PathBuf>,
+    /// Where the directory config search stopped (for `{root_dir}`).
+    pub root_dir: Option<PathBuf>,
     /// Literal values (environment variables) are not placeholder-expanded.
     pub literal: bool,
     /// Raw bytes of a literal value from the environment (may be non-UTF-8).
@@ -52,6 +54,7 @@ impl<T> Val<T> {
             node,
             origin: Origin::Default,
             config_dir: None,
+            root_dir: None,
             literal: false,
             raw: None,
         }
@@ -64,8 +67,14 @@ impl Val<String> {
         let s: OsString = match &self.raw {
             Some(raw) => raw.clone(),
             None if self.literal => self.value.clone().into(),
-            None => expand_placeholders_os(&self.value, name, cwd, self.config_dir.as_deref())
-                .map_err(|e| LmmError::usage(format!("{key} ({}): {e}", self.origin.describe())))?,
+            None => expand_placeholders_os(
+                &self.value,
+                name,
+                cwd,
+                self.config_dir.as_deref(),
+                self.root_dir.as_deref(),
+            )
+            .map_err(|e| LmmError::usage(format!("{key} ({}): {e}", self.origin.describe())))?,
         };
         let p = env::expand_tilde(&s)?;
         Ok(env::absolute_from(cwd, &p))
@@ -84,8 +93,14 @@ impl Val<String> {
         if self.literal {
             return Ok(self.value.clone());
         }
-        expand_placeholders(&self.value, name, cwd, self.config_dir.as_deref())
-            .map_err(|e| LmmError::usage(format!("{key} ({}): {e}", self.origin.describe())))
+        expand_placeholders(
+            &self.value,
+            name,
+            cwd,
+            self.config_dir.as_deref(),
+            self.root_dir.as_deref(),
+        )
+        .map_err(|e| LmmError::usage(format!("{key} ({}): {e}", self.origin.describe())))
     }
 }
 
@@ -94,6 +109,14 @@ impl Val<String> {
 pub struct Config {
     /// Loaded files, highest priority first.
     pub files: Vec<PathBuf>,
+    /// The directory where the directory config search stopped on
+    /// `root: true` (§10.2), if any.
+    pub root_dir: Option<PathBuf>,
+    /// Your address (§3.2). Values from `LMM_NAME` are validated by
+    /// [`Config::name`], values from files when loading.
+    pub name: Option<Val<String>>,
+    /// Data directory (§4.1).
+    pub data_dir: Val<String>,
     pub receive_dir: Val<String>,
     pub draft_dir: Val<String>,
     pub hook_cmd: Option<Val<String>>,
@@ -106,11 +129,18 @@ pub struct Config {
 
 pub const DEFAULT_RECEIVE_DIR: &str = ".lmm-inbox/{name}";
 pub const DEFAULT_DRAFT_DIR: &str = ".lmm-drafts/{name}";
+pub const DEFAULT_DATA_DIR: &str = "~/.lmm";
+
+/// How to set your address when it is missing.
+const SET_NAME: &str = "set LMM_NAME, or name in .lmm.local.yml";
 
 impl Default for Config {
     fn default() -> Self {
         Config {
             files: Vec::new(),
+            root_dir: None,
+            name: None,
+            data_dir: Val::default(DEFAULT_DATA_DIR.into(), Node::Str(DEFAULT_DATA_DIR.into())),
             receive_dir: Val::default(
                 DEFAULT_RECEIVE_DIR.into(),
                 Node::Str(DEFAULT_RECEIVE_DIR.into()),
@@ -129,12 +159,42 @@ impl Default for Config {
     }
 }
 
+/// Kind of configuration file (§10.1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Layer {
+    Global,
+    /// `.lmm.yml`
+    Shared,
+    /// `.lmm.local.yml`
+    Local,
+}
+
 struct Source<'a> {
     path: &'a Path,
-    global: bool,
+    layer: Layer,
+    root_dir: Option<&'a Path>,
 }
 
 impl Source<'_> {
+    fn global(&self) -> bool {
+        self.layer == Layer::Global
+    }
+
+    /// Store a value. The global config is applied after the directory
+    /// configs and the environment (its location depends on them, §4.1), so
+    /// it only fills what they left unset.
+    fn set<T>(&self, slot: &mut Val<T>, v: Val<T>) {
+        if !self.global() || slot.origin == Origin::Default {
+            *slot = v;
+        }
+    }
+
+    fn set_opt<T>(&self, slot: &mut Option<Val<T>>, v: Val<T>) {
+        if !self.global() || slot.is_none() {
+            *slot = Some(v);
+        }
+    }
+
     fn err(&self, key: &str, msg: impl std::fmt::Display) -> LmmError {
         LmmError::usage(format!(
             "config error in {}: {key}: {msg}",
@@ -148,6 +208,7 @@ impl Source<'_> {
             node: node.clone(),
             origin: Origin::File(self.path.to_path_buf()),
             config_dir: self.path.parent().map(Path::to_path_buf),
+            root_dir: self.root_dir.map(Path::to_path_buf),
             literal: false,
             raw: None,
         }
@@ -207,13 +268,14 @@ pub fn parse_size(s: &str) -> Option<u64> {
     num.parse::<u64>().ok()?.checked_mul(mult)
 }
 
-/// Placeholder expansion (§10.6) producing raw bytes, so that `{cwd}` and
-/// `{config_dir}` keep non-UTF-8 path bytes intact (F03-1).
+/// Placeholder expansion (§10.6) producing raw bytes, so that `{cwd}`,
+/// `{config_dir}` and `{root_dir}` keep non-UTF-8 path bytes intact (F03-1).
 pub fn expand_placeholders_os(
     s: &str,
     name: Option<&str>,
     cwd: &Path,
     config_dir: Option<&Path>,
+    root_dir: Option<&Path>,
 ) -> std::result::Result<OsString, String> {
     let mut out = OsString::new();
     let mut rest = s;
@@ -233,10 +295,22 @@ pub fn expand_placeholders_os(
         match &rest[1..end] {
             "name" => match name {
                 Some(n) => out.push(n),
-                None => return Err(format!("{{name}} in {s:?} requires LMM_NAME to be set")),
+                None => {
+                    return Err(format!(
+                        "{{name}} in {s:?} requires your address ({SET_NAME})"
+                    ));
+                }
             },
             "cwd" => out.push(cwd.as_os_str()),
             "config_dir" => out.push(config_dir.unwrap_or(cwd).as_os_str()),
+            "root_dir" => match root_dir {
+                Some(r) => out.push(r.as_os_str()),
+                None => {
+                    return Err(format!(
+                        "{{root_dir}} in {s:?} requires a directory config with root: true"
+                    ));
+                }
+            },
             other => return Err(format!("unknown placeholder {{{other}}} in {s:?}")),
         }
         rest = &rest[end + 1..];
@@ -252,17 +326,36 @@ pub fn expand_placeholders(
     name: Option<&str>,
     cwd: &Path,
     config_dir: Option<&Path>,
+    root_dir: Option<&Path>,
 ) -> std::result::Result<String, String> {
-    expand_placeholders_os(s, name, cwd, config_dir)?
+    expand_placeholders_os(s, name, cwd, config_dir, root_dir)?
         .into_string()
         .map_err(|_| format!("{s:?} expands to a path that is not valid UTF-8"))
 }
 
 fn check_placeholders(s: &str, key: &str, src: &Source) -> Result<()> {
     // Expand with dummy values to validate the syntax only.
-    expand_placeholders(s, Some("x"), Path::new("/"), Some(Path::new("/")))
+    let dummy = Some(Path::new("/"));
+    expand_placeholders(s, Some("x"), Path::new("/"), dummy, dummy)
         .map(|_| ())
         .map_err(|e| src.err(key, e))
+}
+
+/// `data_dir` (§10.6): no `{name}` (every participant must share the data
+/// directory), and absolute once expanded (a path relative to the current
+/// directory would give each subdirectory its own data directory).
+fn check_data_dir(s: &str, src: &Source) -> Result<()> {
+    check_placeholders(s, "data_dir", src)?;
+    let dummy = Some(Path::new("/"));
+    let e = expand_placeholders(s, None, Path::new("/"), dummy, dummy)
+        .map_err(|_| src.err("data_dir", "{name} cannot be used"))?;
+    if !(e.starts_with('/') || e == "~" || e.starts_with("~/")) {
+        return Err(src.err(
+            "data_dir",
+            format!("{s:?} is not an absolute path (use {{root_dir}}, {{config_dir}} or ~/)"),
+        ));
+    }
+    Ok(())
 }
 
 impl Config {
@@ -277,6 +370,33 @@ impl Config {
                         return Err(src.err("root", "must be a boolean"));
                     }
                 }
+                "name" => {
+                    // Personal configs only (§3.2). Elsewhere the key is
+                    // ignored entirely, even if the value is invalid.
+                    if src.layer != Layer::Local {
+                        warn(format!(
+                            "name is only valid in .lmm.local.yml; ignored in {}",
+                            src.path.display()
+                        ));
+                        continue;
+                    }
+                    let s = as_string(v, k, src)?;
+                    address::validate(&s).map_err(|e| src.err(k, e))?;
+                    self.name = Some(src.val(s, v));
+                }
+                "data_dir" => {
+                    // The global config is read from the data directory (§4.1).
+                    if src.global() {
+                        warn(format!(
+                            "data_dir is not valid in the global config; ignored in {}",
+                            src.path.display()
+                        ));
+                        continue;
+                    }
+                    let s = as_string(v, k, src)?;
+                    check_data_dir(&s, src)?;
+                    self.data_dir = src.val(s, v);
+                }
                 "receive" | "draft" => {
                     for (sk, sv) in as_map(v, k, src)?.iter() {
                         let key = format!("{k}.{sk}");
@@ -285,9 +405,9 @@ impl Config {
                             check_placeholders(&s, &key, src)?;
                             let val = src.val(s, sv);
                             if k == "receive" {
-                                self.receive_dir = val;
+                                src.set(&mut self.receive_dir, val);
                             } else {
-                                self.draft_dir = val;
+                                src.set(&mut self.draft_dir, val);
                             }
                         } else {
                             unknown(&key, src);
@@ -300,7 +420,7 @@ impl Config {
                         match sk.as_str() {
                             "cmd" => {
                                 let s = as_string(sv, &key, src)?;
-                                self.hook_cmd = Some(src.val(s, sv));
+                                src.set_opt(&mut self.hook_cmd, src.val(s, sv));
                             }
                             "timeout" => {
                                 let t = match sv {
@@ -317,11 +437,11 @@ impl Config {
                                 if Duration::try_from_secs_f64(t).is_err() {
                                     return Err(src.err(&key, "is too large"));
                                 }
-                                self.hook_timeout = src.val(t, sv);
+                                src.set(&mut self.hook_timeout, src.val(t, sv));
                             }
                             "max_messages" => match sv {
                                 Node::Int(i, _) if (1..=30).contains(i) => {
-                                    self.hook_max_messages = src.val(*i as usize, sv);
+                                    src.set(&mut self.hook_max_messages, src.val(*i as usize, sv));
                                 }
                                 _ => return Err(src.err(&key, "must be an integer from 1 to 30")),
                             },
@@ -339,22 +459,32 @@ impl Config {
                                 if !s.contains('{') {
                                     address::validate(&s).map_err(|e| src.err(&key, e))?;
                                 }
-                                self.post_reply_to = Some(src.val(s, sv));
+                                src.set_opt(&mut self.post_reply_to, src.val(s, sv));
                             }
                             "meta" => {
+                                // Keys only in the global config, in its order.
+                                let mut fill = Vec::new();
                                 for (mk, mv) in as_map(sv, &key, src)?.iter() {
                                     let mkey = format!("post.meta.{mk}");
                                     validate_meta_key(mk).map_err(|e| src.err(&mkey, e))?;
                                     let s = as_string(mv, &mkey, src)?;
                                     check_placeholders(&s, &mkey, src)?;
                                     let val = src.val(s, mv);
-                                    if let Some(slot) =
-                                        self.post_meta.iter_mut().find(|(n, _)| n == mk)
-                                    {
-                                        slot.1 = val;
-                                    } else {
-                                        self.post_meta.push((mk.clone(), val));
+                                    match self.post_meta.iter_mut().find(|(n, _)| n == mk) {
+                                        Some(slot) => {
+                                            if !src.global() {
+                                                slot.1 = val;
+                                            }
+                                        }
+                                        None if src.global() => fill.push((mk.clone(), val)),
+                                        None => self.post_meta.push((mk.clone(), val)),
                                     }
+                                }
+                                // They come first, as if the global config
+                                // had been applied first.
+                                if !fill.is_empty() {
+                                    fill.append(&mut self.post_meta);
+                                    self.post_meta = fill;
                                 }
                             }
                             _ => unknown(&key, src),
@@ -364,7 +494,7 @@ impl Config {
                 "max_message_size" => {
                     // Directory configs ignore the key entirely, even if the
                     // value is invalid (§10.4).
-                    if !src.global {
+                    if !src.global() {
                         warn(format!(
                             "max_message_size is only valid in the global config; ignored in {}",
                             src.path.display()
@@ -382,7 +512,7 @@ impl Config {
                             "must be a number of bytes or a string like 512K, 10M, 1G",
                         )
                     })?;
-                    self.max_message_size = src.val(size, v);
+                    src.set(&mut self.max_message_size, src.val(size, v));
                 }
                 _ => unknown(k, src),
             }
@@ -398,6 +528,7 @@ impl Config {
                 value,
                 origin: Origin::Env(name),
                 config_dir: None,
+                root_dir: None,
                 literal: true,
                 raw: Some(raw),
             }
@@ -411,14 +542,63 @@ impl Config {
         if let Some(v) = env::var_os("LMM_HOOK_CMD") {
             self.hook_cmd = Some(lit(v, "LMM_HOOK_CMD"));
         }
+        if let Some(v) = env::var_os("LMM_NAME") {
+            self.name = Some(lit(v, "LMM_NAME"));
+        }
+        if let Some(v) = env::var_os("LMM_DATA_DIR") {
+            self.data_dir = lit(v, "LMM_DATA_DIR");
+        }
     }
 
-    /// Load configuration for `cwd` (§10.1, §10.2).
-    pub fn load(cwd: &Path, lmm_home: &Path) -> Result<Config> {
+    /// Load the directory configs from `start` up (§10.2) and the
+    /// environment variables (§10.5). The global config is read afterwards
+    /// by [`Config::load_global`], because its location depends on the data
+    /// directory, which these decide (§4.1).
+    pub fn load_dirs(start: &Path) -> Result<Config> {
         let mut cfg = Config::default();
-        // (path, global) from weakest to strongest.
-        let mut sources: Vec<(PathBuf, Map, bool)> = Vec::new();
+        // Strongest first.
+        let mut found: Vec<(PathBuf, Map, Layer)> = Vec::new();
+        let mut root_dir = None;
+        let mut dir = Some(start.to_path_buf());
+        while let Some(d) = dir {
+            // `.lmm.local.yml` is laid over `.lmm.yml`, `root` included: its
+            // `root: false` cancels a committed `root: true` (§10.2).
+            let mut root = None;
+            for (name, layer) in [
+                (".lmm.local.yml", Layer::Local),
+                (".lmm.yml", Layer::Shared),
+            ] {
+                let p = d.join(name);
+                if let Some((m, r)) = read_file(&p)? {
+                    root = root.or(r);
+                    found.push((p, m, layer));
+                }
+            }
+            if root == Some(true) {
+                root_dir = Some(d);
+                break;
+            }
+            dir = d.parent().map(Path::to_path_buf);
+        }
+        for (p, m, layer) in found.iter().rev() {
+            cfg.apply(
+                m,
+                &Source {
+                    path: p,
+                    layer: *layer,
+                    root_dir: root_dir.as_deref(),
+                },
+            )?;
+        }
+        cfg.root_dir = root_dir;
+        cfg.files = found.into_iter().map(|(p, _, _)| p).collect();
+        cfg.apply_env();
+        Ok(cfg)
+    }
 
+    /// Read the global config (§10.1): `LMM_CONFIG`, or `config.yml` in the
+    /// data directory if it exists. It is the weakest source (§10.2).
+    pub fn load_global(&mut self, data_dir: &Path, cwd: &Path) -> Result<()> {
         let global = match env::var_os("LMM_CONFIG") {
             Some(p) => {
                 let p = env::absolute_from(cwd, Path::new(&p));
@@ -431,49 +611,57 @@ impl Config {
                 Some(p)
             }
             None => {
-                let p = lmm_home.join("config.yml");
+                let p = data_dir.join("config.yml");
                 fs::metadata(&p).is_ok().then_some(p)
             }
         };
         if let Some(p) = global
             && let Some((m, _)) = read_file(&p)?
         {
-            sources.push((p, m, true));
-        }
-
-        let mut dir_sources: Vec<(PathBuf, Map)> = Vec::new();
-        let mut dir = Some(cwd.to_path_buf());
-        while let Some(d) = dir {
-            let mut stop = false;
-            for name in [".lmm.local.yml", ".lmm.yml"] {
-                let p = d.join(name);
-                if let Some((m, root)) = read_file(&p)? {
-                    stop |= root;
-                    dir_sources.push((p, m));
-                }
-            }
-            if stop {
-                break;
-            }
-            dir = d.parent().map(Path::to_path_buf);
-        }
-        // dir_sources is strongest first; apply weakest first.
-        for (p, m) in dir_sources.into_iter().rev() {
-            sources.push((p, m, false));
-        }
-
-        for (p, m, global) in &sources {
-            cfg.apply(
-                m,
+            let root_dir = self.root_dir.clone();
+            self.apply(
+                &m,
                 &Source {
-                    path: p,
-                    global: *global,
+                    path: &p,
+                    layer: Layer::Global,
+                    root_dir: root_dir.as_deref(),
                 },
             )?;
+            self.files.push(p);
         }
-        cfg.files = sources.into_iter().rev().map(|(p, _, _)| p).collect();
-        cfg.apply_env();
-        Ok(cfg)
+        Ok(())
+    }
+
+    /// Your address (§3.2): `LMM_NAME`, or `name` in a personal config.
+    pub fn name(&self) -> Result<Option<String>> {
+        let Some(v) = &self.name else {
+            return Ok(None);
+        };
+        if !v.literal {
+            return Ok(Some(v.value.clone()));
+        }
+        let n = v
+            .os_value()
+            .into_string()
+            .map_err(|_| LmmError::usage("LMM_NAME is not valid UTF-8"))?;
+        address::validate(&n).map_err(|e| LmmError::usage(format!("LMM_NAME: {e}")))?;
+        Ok(Some(n))
+    }
+
+    /// Your address, required.
+    pub fn require_name(&self) -> Result<String> {
+        self.name()?
+            .ok_or_else(|| LmmError::usage(format!("your address is not set ({SET_NAME})")))
+    }
+
+    /// Data directory (§4.1) as an absolute path.
+    pub fn data_dir(&self, cwd: &Path) -> Result<PathBuf> {
+        let v = &self.data_dir;
+        if v.literal {
+            // LMM_DATA_DIR: relative to the current directory, no `~` expansion.
+            return Ok(env::absolute_from(cwd, Path::new(&v.os_value())));
+        }
+        v.resolve_path("data_dir", None, cwd)
     }
 
     /// `post.reply_to`, expanded and validated.
@@ -512,6 +700,13 @@ impl Config {
                 out.push_str(&format!("#   {}\n", f.display()));
             }
         }
+        match &self.root_dir {
+            Some(r) => out.push_str(&format!(
+                "# Root directory ({{root_dir}}): {}\n",
+                r.display()
+            )),
+            None => out.push_str("# Root directory ({root_dir}): (none)\n"),
+        }
         let line = |out: &mut String, indent: usize, key: &str, node: &Node, o: &Origin| {
             let pad = " ".repeat(indent);
             out.push_str(&pad);
@@ -524,6 +719,16 @@ impl Config {
             }
             out.push('\n');
         };
+        if let Some(n) = &self.name {
+            line(&mut out, 0, "name", &n.node, &n.origin);
+        }
+        line(
+            &mut out,
+            0,
+            "data_dir",
+            &self.data_dir.node,
+            &self.data_dir.origin,
+        );
         out.push_str("receive:\n");
         line(
             &mut out,
@@ -582,8 +787,9 @@ impl Config {
 }
 
 /// Read and parse a config file. `Ok(None)` if missing or unreadable
-/// (unreadable files produce a warning). Returns the map and `root`.
-fn read_file(p: &Path) -> Result<Option<(Map, bool)>> {
+/// (unreadable files produce a warning). Returns the map and `root`, if
+/// set to a boolean (other values are rejected when applying the map).
+fn read_file(p: &Path) -> Result<Option<(Map, Option<bool>)>> {
     let data = match fs::read(p) {
         Ok(d) => d,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -598,7 +804,10 @@ fn read_file(p: &Path) -> Result<Option<(Map, bool)>> {
     })?;
     let map = yaml::parse_map(&text)
         .map_err(|e| LmmError::usage(format!("config error in {}: {e}", p.display())))?;
-    let root = matches!(map.get("root"), Some(Node::Bool(true)));
+    let root = match map.get("root") {
+        Some(Node::Bool(b)) => Some(*b),
+        _ => None,
+    };
     Ok(Some((map, root)))
 }
 
@@ -620,16 +829,22 @@ mod tests {
     fn placeholders() {
         let cwd = Path::new("/w");
         let cd = Some(Path::new("/c"));
+        let rd = Some(Path::new("/r"));
         assert_eq!(
-            expand_placeholders("{config_dir}/.lmm-inbox/{name}", Some("a"), cwd, cd).unwrap(),
+            expand_placeholders("{config_dir}/.lmm-inbox/{name}", Some("a"), cwd, cd, rd).unwrap(),
             "/c/.lmm-inbox/a"
         );
         assert_eq!(
-            expand_placeholders("{cwd}/{{x}", None, cwd, cd).unwrap(),
+            expand_placeholders("{cwd}/{{x}", None, cwd, cd, rd).unwrap(),
             "/w/{x}"
         );
-        assert!(expand_placeholders("{nope}", None, cwd, cd).is_err());
-        assert!(expand_placeholders("{name}", None, cwd, cd).is_err());
-        assert!(expand_placeholders("{name", Some("a"), cwd, cd).is_err());
+        assert_eq!(
+            expand_placeholders("{root_dir}/.lmm", None, cwd, cd, rd).unwrap(),
+            "/r/.lmm"
+        );
+        assert!(expand_placeholders("{root_dir}", None, cwd, cd, None).is_err());
+        assert!(expand_placeholders("{nope}", None, cwd, cd, rd).is_err());
+        assert!(expand_placeholders("{name}", None, cwd, cd, rd).is_err());
+        assert!(expand_placeholders("{name", Some("a"), cwd, cd, rd).is_err());
     }
 }

@@ -16,9 +16,9 @@ use crate::yaml;
 
 /// Find a message by `lmm_id` in the user's own mailbox.
 fn find_by_id(ctx: &Ctx, id: &str) -> Result<PathBuf> {
-    let name = env::require_name()?;
-    ctx.home.require(&name, "your")?;
-    let h = &ctx.home;
+    let name = ctx.cfg.require_name()?;
+    ctx.data_dir.require(&name, "your")?;
+    let h = &ctx.data_dir;
     for dir in [
         h.new_dir(&name),
         h.cur_dir(&name),

@@ -25,7 +25,7 @@ fn help_and_usage_errors() {
 fn box_create_list_remove() {
     let e = Env::new();
     e.create_box("alpha");
-    let b = e.home.join("boxes/alpha");
+    let b = e.data_dir.join("boxes/alpha");
     for d in [
         "inbox/.tmp",
         "inbox/new",
@@ -42,9 +42,9 @@ fn box_create_list_remove() {
     let list = e.ok(None, &["box", "list"]);
     assert_eq!(list, "alpha\tnew=0\tfailed=0\nbeta\tnew=0\tfailed=0\n");
     e.ok(None, &["box", "remove", "beta"]);
-    assert!(!e.home.join("boxes/beta").exists());
+    assert!(!e.data_dir.join("boxes/beta").exists());
     assert!(
-        e.home.join("locks/box/beta.lock").exists(),
+        e.data_dir.join("locks/box/beta.lock").exists(),
         "lock files are kept"
     );
     assert_eq!(e.ok(None, &["box", "list"]), "alpha\tnew=0\tfailed=0\n");
@@ -58,15 +58,15 @@ fn box_invalid_addresses() {
         assert_eq!(code(&e.run(None, &["box", "create", a])), 2, "{a}");
         assert_eq!(code(&e.run(None, &["box", "remove", a])), 2, "{a}");
     }
-    assert!(!e.home.join("boxes/..").join("x").exists());
+    assert!(!e.data_dir.join("boxes/..").join("x").exists());
 }
 
 #[test]
 fn box_create_cleans_leftovers() {
     let e = Env::new();
     e.create_box("alpha");
-    let creating = e.home.join("boxes/.creating/beta/junk");
-    let removing = e.home.join("boxes/.removing/beta/junk");
+    let creating = e.data_dir.join("boxes/.creating/beta/junk");
+    let removing = e.data_dir.join("boxes/.removing/beta/junk");
     fs::create_dir_all(&creating).unwrap();
     fs::create_dir_all(&removing).unwrap();
     e.create_box("beta");
@@ -84,7 +84,7 @@ fn box_remove_refuses_pending_and_live_sends() {
     e.post("alpha", &["-t", "beta", d.to_str().unwrap()]);
     let o = e.run(None, &["box", "remove", "beta"]);
     assert_eq!(code(&o), 1, "{}", show(&o));
-    assert!(e.home.join("boxes/beta").exists());
+    assert!(e.data_dir.join("boxes/beta").exists());
 
     // Abandoned work directory (no lock held) is removed together.
     e.create_box("gamma");
@@ -103,7 +103,7 @@ fn box_remove_refuses_pending_and_live_sends() {
     assert_eq!(code(&o), 1, "{}", show(&o));
     assert!(String::from_utf8_lossy(&o.stderr).contains("in progress"));
     e.ok(None, &["box", "remove", "delta", "--force"]);
-    assert!(!e.home.join("boxes/delta").exists());
+    assert!(!e.data_dir.join("boxes/delta").exists());
     drop(lockf);
 
     e.ok(None, &["box", "remove", "beta", "--force"]);

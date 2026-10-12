@@ -28,7 +28,7 @@ fn dotdot_after_missing_component_cannot_bypass_check() {
     let e = setup();
     send(&e);
     let link = e.work.join("data-link");
-    std::os::unix::fs::symlink(&e.home, &link).unwrap();
+    std::os::unix::fs::symlink(&e.data_dir, &link).unwrap();
     let dest = format!(
         "{}/not-yet/../data-link/boxes/beta/inbox/new",
         e.work.display()
@@ -47,7 +47,7 @@ fn dotdot_after_missing_component_cannot_bypass_check() {
     assert_eq!(code(&e.run(Some("beta"), &["hook", &dest])), 1);
     let draft = format!("{}/not-yet/../data-link/d", e.work.display());
     assert_eq!(code(&e.run(None, &["draft", &draft])), 2);
-    assert!(!e.home.join("d").exists());
+    assert!(!e.data_dir.join("d").exists());
     // A symlink loop can't be judged: refused.
     std::os::unix::fs::symlink(e.work.join("loop"), e.work.join("loop")).unwrap();
     assert_eq!(code(&e.run(Some("beta"), &["receive", "loop/x"])), 2);
@@ -114,7 +114,7 @@ fn post_rejects_messages_over_parser_limits() {
 fn wait_interrupted_while_waiting_for_lock() {
     let e = setup();
     send(&e);
-    let lockp = e.home.join("locks/receive/beta.lock");
+    let lockp = e.data_dir.join("locks/receive/beta.lock");
     fs::create_dir_all(lockp.parent().unwrap()).unwrap();
     let holder = fs::OpenOptions::new()
         .read(true)
@@ -170,19 +170,19 @@ fn wait_interrupted_while_waiting_for_lock() {
 fn non_utf8_environment_values() {
     let e = Env::new();
     let raw = [e.tmp.path().as_os_str().as_bytes(), b"/data-\xff"].concat();
-    let home = OsStr::from_bytes(&raw);
-    if fs::create_dir(home).is_err() {
+    let data_dir = OsStr::from_bytes(&raw);
+    if fs::create_dir(data_dir).is_err() {
         return; // file system requires UTF-8 names
     }
-    fs::remove_dir(home).unwrap();
+    fs::remove_dir(data_dir).unwrap();
     let o = e
         .cmd(None)
-        .env("LMM_HOME", home)
+        .env("LMM_DATA_DIR", data_dir)
         .args(["box", "create", "other"])
         .output()
         .unwrap();
     assert_eq!(code(&o), 0, "{}", show(&o));
-    assert!(std::path::Path::new(home).join("boxes/other").is_dir());
+    assert!(std::path::Path::new(data_dir).join("boxes/other").is_dir());
     assert!(!e.user_home.join(".lmm").exists(), "no fallback to ~/.lmm");
     // LMM_NAME must be text.
     let bad = OsStr::from_bytes(b"a\xff");
@@ -297,8 +297,8 @@ fn config_show_long_keys_are_valid_yaml() {
 fn box_remove_finishes_interrupted_removal() {
     let e = setup();
     send(&e);
-    let staged = e.home.join("boxes/.removing/alpha");
-    fs::rename(e.home.join("boxes/alpha"), &staged).unwrap();
+    let staged = e.data_dir.join("boxes/.removing/alpha");
+    fs::rename(e.data_dir.join("boxes/alpha"), &staged).unwrap();
     e.ok(None, &["box", "remove", "alpha"]);
     assert!(!staged.exists());
     // Nothing left: the usual "does not exist" error.
@@ -307,5 +307,5 @@ fn box_remove_finishes_interrupted_removal() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("does not exist"));
     // A never-created address doesn't get a lock file.
     assert_eq!(code(&e.run(None, &["box", "remove", "gamma"])), 1);
-    assert!(!e.home.join("locks/receive/gamma.lock").exists());
+    assert!(!e.data_dir.join("locks/receive/gamma.lock").exists());
 }

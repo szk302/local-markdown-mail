@@ -9,8 +9,6 @@ use crate::address;
 use crate::cli::WaitArgs;
 use crate::commands::Ctx;
 use crate::commands::receive::{self, Options};
-use crate::config::Config;
-use crate::env;
 use crate::error::{LmmError, Result};
 use crate::frontmatter;
 use crate::fsutil;
@@ -54,7 +52,7 @@ impl Filter {
 }
 
 pub fn run(ctx: &Ctx, a: &WaitArgs) -> Result<()> {
-    let name = env::require_name()?;
+    let name = ctx.cfg.require_name()?;
     if let Some(f) = &a.from {
         address::validate(f).map_err(|e| LmmError::usage(format!("--from: {e}")))?;
     }
@@ -73,9 +71,8 @@ pub fn run(ctx: &Ctx, a: &WaitArgs) -> Result<()> {
         ),
         None => None,
     };
-    ctx.home.require(&name, "your")?;
-    let cfg = Config::load(&ctx.cwd, &ctx.home.root)?;
-    let dest = receive::resolve_dest(ctx, &cfg, a.dir.as_deref(), &name)?;
+    ctx.data_dir.require(&name, "your")?;
+    let dest = receive::resolve_dest(ctx, a.dir.as_deref(), &name)?;
 
     // Install handlers before creating the receive directory: once it
     // exists, signals are handled (tests rely on this ordering).
@@ -98,12 +95,12 @@ pub fn run(ctx: &Ctx, a: &WaitArgs) -> Result<()> {
     };
     let f = |i: &Inspected| filter.matches(i);
     let start = Instant::now();
-    let new = ctx.home.new_dir(&name);
+    let new = ctx.data_dir.new_dir(&name);
     loop {
         if let Some(e) = interrupted() {
             return Err(e);
         }
-        ctx.home.require(&name, "your")?;
+        ctx.data_dir.require(&name, "your")?;
         let has = fsutil::count_visible_entries(&new)
             .map_err(|e| LmmError::runtime(format!("cannot read {}: {e}", new.display())))?
             > 0;
@@ -121,7 +118,7 @@ pub fn run(ctx: &Ctx, a: &WaitArgs) -> Result<()> {
             };
             // A recorded signal wins over any error from receiving (e.g. a
             // lock timeout that raced with the signal), §7.4.
-            let out = match receive::receive_locked(&ctx.home, &name, &dest, &opts) {
+            let out = match receive::receive_locked(&ctx.data_dir, &name, &dest, &opts) {
                 Ok(out) => out,
                 Err(e) => return Err(interrupted().unwrap_or(e)),
             };

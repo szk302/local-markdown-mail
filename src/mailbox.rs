@@ -10,13 +10,13 @@ use crate::lock::{self, Guard, Kind, Mode, Probe};
 
 /// Paths inside the data directory.
 #[derive(Debug, Clone)]
-pub struct Home {
+pub struct DataDir {
     pub root: PathBuf,
 }
 
-impl Home {
+impl DataDir {
     pub fn new(root: PathBuf) -> Self {
-        Home { root }
+        DataDir { root }
     }
 
     pub fn boxes(&self) -> PathBuf {
@@ -87,9 +87,9 @@ pub struct WorkDir {
 
 impl WorkDir {
     /// Create a work directory in `addr`'s `.tmp` (§6.4 step 4).
-    pub fn create(home: &Home, addr: &str) -> Result<WorkDir> {
-        let tmp = home.tmp_dir(addr);
-        let prepare = home.lock(Kind::Prepare, addr, Mode::Shared)?;
+    pub fn create(data_dir: &DataDir, addr: &str) -> Result<WorkDir> {
+        let tmp = data_dir.tmp_dir(addr);
+        let prepare = data_dir.lock(Kind::Prepare, addr, Mode::Shared)?;
         if !fs::symlink_metadata(&tmp).is_ok_and(|m| m.is_dir()) {
             return Err(LmmError::runtime(format!(
                 "{} does not exist (mailbox {addr:?} removed?)",
@@ -140,8 +140,8 @@ impl Drop for WorkDir {
 
 /// Remove abandoned work directories in `addr`'s `.tmp` (§6.4 cleanup).
 /// Errors are reported as warnings.
-pub fn cleanup_abandoned(home: &Home, addr: &str) {
-    let prepare = match lock::try_acquire(&home.root, Kind::Prepare, addr, Mode::Exclusive) {
+pub fn cleanup_abandoned(data_dir: &DataDir, addr: &str) {
+    let prepare = match lock::try_acquire(&data_dir.root, Kind::Prepare, addr, Mode::Exclusive) {
         Ok(Some(g)) => g,
         Ok(None) => return, // a send is preparing; skip this time
         Err(e) => {
@@ -149,7 +149,7 @@ pub fn cleanup_abandoned(home: &Home, addr: &str) {
             return;
         }
     };
-    let tmp = home.tmp_dir(addr);
+    let tmp = data_dir.tmp_dir(addr);
     let mut abandoned: Vec<(PathBuf, Option<Guard>)> = Vec::new();
     match fs::read_dir(&tmp) {
         Ok(rd) => {
@@ -185,8 +185,8 @@ pub fn cleanup_abandoned(home: &Home, addr: &str) {
 
 /// Probe all work directories of a mailbox without waiting.
 /// Returns (live count, guards of abandoned ones).
-pub fn probe_workdirs(home: &Home, addr: &str) -> Result<(usize, Vec<Guard>)> {
-    let tmp = home.tmp_dir(addr);
+pub fn probe_workdirs(data_dir: &DataDir, addr: &str) -> Result<(usize, Vec<Guard>)> {
+    let tmp = data_dir.tmp_dir(addr);
     let mut live = 0;
     let mut guards = Vec::new();
     let rd = match fs::read_dir(&tmp) {

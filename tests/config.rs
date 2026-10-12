@@ -7,8 +7,8 @@ use common::*;
 #[test]
 fn config_layering_and_origin() {
     let e = Env::new();
-    let global = e.home.join("config.yml");
-    fs::create_dir_all(&e.home).unwrap();
+    let global = e.data_dir.join("config.yml");
+    fs::create_dir_all(&e.data_dir).unwrap();
     fs::write(
         &global,
         "hook:\n  timeout: 5\n  max_messages: 3\npost:\n  meta:\n    a: g\n    b: g\nmax_message_size: 10M\n",
@@ -67,8 +67,11 @@ fn config_layering_and_origin() {
         out.contains(&format!("  max_messages: 3  # {g}\n")),
         "{out}"
     );
-    assert!(out.contains(&format!("    a: g  # {g}\n")), "{out}");
-    assert!(out.contains(&format!("    b: shared  # {top}\n")), "{out}");
+    // Keys from the global config come first.
+    assert!(
+        out.contains(&format!("    a: g  # {g}\n    b: shared  # {top}\n")),
+        "{out}"
+    );
     assert!(
         out.contains(&format!("max_message_size: \"10M\"  # {g}\n")),
         "{out}"
@@ -97,6 +100,55 @@ fn config_layering_and_origin() {
         "{out}"
     );
     assert!(out.contains("  cmd: echo hi  # LMM_HOOK_CMD\n"), "{out}");
+}
+
+/// `.lmm.local.yml` is laid over `.lmm.yml` in the same directory, `root`
+/// included (§10.2).
+#[test]
+fn local_root_overrides_shared_root() {
+    let e = Env::new();
+    fs::write(e.work.join(".lmm.yml"), "root: true\nhook:\n  timeout: 5\n").unwrap();
+    let sub = e.work.join("sub");
+    fs::create_dir(&sub).unwrap();
+    let show_in_sub = || {
+        let o = e
+            .cmd(None)
+            .args(["config", "show", "-C", "sub"])
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", show(&o));
+        String::from_utf8(o.stdout).unwrap()
+    };
+    let cases = [
+        // (sub/.lmm.yml, sub/.lmm.local.yml, parent read?)
+        (Some("root: true\n"), None, false),
+        (Some("root: true\n"), Some("root: false\n"), true),
+        (
+            Some("root: true\n"),
+            Some("hook:\n  max_messages: 2\n"),
+            false,
+        ),
+        (Some("root: false\n"), Some("root: true\n"), false),
+        (None, Some("root: true\n"), false),
+        (None, Some("root: false\n"), true),
+    ];
+    for (shared, local, parent) in cases {
+        for (name, content) in [(".lmm.yml", shared), (".lmm.local.yml", local)] {
+            let p = sub.join(name);
+            match content {
+                Some(c) => fs::write(&p, c).unwrap(),
+                None => {
+                    let _ = fs::remove_file(&p);
+                }
+            }
+        }
+        let out = show_in_sub();
+        assert_eq!(
+            out.contains("timeout: 5\n"),
+            parent,
+            "{shared:?} {local:?}: {out}"
+        );
+    }
 }
 
 #[test]

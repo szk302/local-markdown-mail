@@ -17,6 +17,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Set up configuration files and your mailbox
+    Init(InitArgs),
     /// Send a message directory
     Post(PostArgs),
     /// Create a draft message directory for `lmm post`
@@ -35,6 +37,23 @@ pub enum Command {
     /// Inspect configuration
     #[command(subcommand)]
     Config(ConfigCommand),
+}
+
+#[derive(Debug, Args)]
+pub struct InitArgs {
+    /// Set up the project root (root: true) instead of joining the project above
+    #[arg(long = "root")]
+    pub root: bool,
+    /// Your address: written to .lmm.local.yml, and its mailbox is created
+    #[arg(
+        long = "name",
+        value_name = "ADDRESS",
+        required_unless_present = "root"
+    )]
+    pub name: Option<String>,
+    /// Directory to set up (default: current directory)
+    #[arg(value_name = "DIR")]
+    pub dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

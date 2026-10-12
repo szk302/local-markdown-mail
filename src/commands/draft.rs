@@ -8,7 +8,6 @@ use time::macros::format_description;
 
 use crate::cli::DraftArgs;
 use crate::commands::Ctx;
-use crate::config::Config;
 use crate::env;
 use crate::error::{IoContext, LmmError, Result};
 use crate::frontmatter;
@@ -30,7 +29,7 @@ fn random8() -> String {
 
 fn check_location(ctx: &Ctx, p: &Path) -> Result<()> {
     env::check_no_newline(p, "draft directory")?;
-    env::check_outside_home(p, &ctx.home.root, "draft directory")
+    env::check_outside_data_dir(p, &ctx.data_dir.root, "draft directory")
 }
 
 pub fn run(ctx: &Ctx, a: &DraftArgs) -> Result<()> {
@@ -42,7 +41,7 @@ pub fn run(ctx: &Ctx, a: &DraftArgs) -> Result<()> {
         .iter()
         .map(|m| frontmatter::parse_meta_arg(m).map_err(LmmError::Usage))
         .collect::<Result<Vec<_>>>()?;
-    let name = env::lmm_name()?;
+    let name = ctx.cfg.name()?;
 
     let mut fm = Map::new();
     if let Some(s) = &a.subject {
@@ -83,8 +82,8 @@ pub fn run(ctx: &Ctx, a: &DraftArgs) -> Result<()> {
             d
         }
         None => {
-            let cfg = Config::load(&ctx.cwd, &ctx.home.root)?;
-            let base = cfg
+            let base = ctx
+                .cfg
                 .draft_dir
                 .resolve_path("draft.dir", name.as_deref(), &ctx.cwd)?;
             check_location(ctx, &base)?;

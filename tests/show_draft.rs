@@ -160,7 +160,7 @@ fn draft_errors_and_locations() {
     // Default location needs LMM_NAME.
     assert_eq!(code(&e.run(None, &["draft"])), 2);
     // Inside the data directory.
-    let inside = e.home.join("drafts/x");
+    let inside = e.data_dir.join("drafts/x");
     assert_eq!(code(&e.run(None, &["draft", inside.to_str().unwrap()])), 2);
     assert!(!inside.exists());
     // LMM_DRAFT_DIR without {name} works without LMM_NAME.

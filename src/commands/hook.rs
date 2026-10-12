@@ -31,20 +31,29 @@ pub fn run(a: &HookArgs) -> Result<()> {
 }
 
 fn run_inner(a: &HookArgs) -> Result<()> {
-    // 1. Participation. Checked before anything else (current directory,
-    // HOME, ...) so that non-participating sessions always exit 0.
-    let Some(name) = env::lmm_name()? else {
+    // 1. Participation. Your address comes from LMM_NAME or the directory
+    // configs, so it is found before anything else (HOME, the data
+    // directory, the global config, ...) that non-participating sessions
+    // must not fail on. Without a current directory there are no directory
+    // configs to read.
+    let cwd = match env::cwd() {
+        Ok(c) => c,
+        Err(_) if env::var_os("LMM_NAME").is_none() => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let cfg = Config::load_dirs(&cwd)?;
+    let Some(name) = cfg.name()? else {
         return Ok(());
     };
-    let ctx = &Ctx::from_env()?;
-    if !ctx.home.exists(&name) {
+    let ctx = &Ctx::with_dirs(cwd, cfg)?;
+    if !ctx.data_dir.exists(&name) {
         warn(format!(
             "mailbox {name:?} does not exist; nothing to receive (create it with `lmm box create {name}`)"
         ));
         return Ok(());
     }
     // 2. Cheap check without the lock.
-    let new = ctx.home.new_dir(&name);
+    let new = ctx.data_dir.new_dir(&name);
     match fsutil::count_visible_entries(&new) {
         Ok(0) => return Ok(()),
         Ok(_) => {}
@@ -56,15 +65,15 @@ fn run_inner(a: &HookArgs) -> Result<()> {
         }
     }
     // 3. Receive.
-    let cfg = Config::load(&ctx.cwd, &ctx.home.root)?;
-    let dest = receive::resolve_dest(ctx, &cfg, a.dir.as_deref(), &name)?;
+    let cfg = &ctx.cfg;
+    let dest = receive::resolve_dest(ctx, a.dir.as_deref(), &name)?;
     receive::prepare_dest(&dest)?;
     let opts = Options {
         max: Some(cfg.hook_max_messages.value),
         print: false,
         ..Default::default()
     };
-    let out = receive::receive_locked(&ctx.home, &name, &dest, &opts)?;
+    let out = receive::receive_locked(&ctx.data_dir, &name, &dest, &opts)?;
     let failed = out.failures + out.moved_to_failed > 0;
     if out.received.is_empty() {
         return if failed {
