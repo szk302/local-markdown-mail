@@ -414,6 +414,45 @@ hook:
     '{decision: "block", reason: ("新着メッセージがあります。次のディレクトリの index.md を読んで対応し、処理後に削除してください:\n" + $paths)}'
 ```
 
+### 待機中のエージェントを起こす
+
+`Stop` フックの `lmm hook` が新着を渡すのは、エージェントが応答を終えるときだけです。返信を待って何もしていないエージェントには、次に何かを入力するまで届きません。
+Claude Code の `asyncRewake` フックは、バックグラウンドで動き、終了コード 2 で終わると、待機中のセッションでもエージェントを起こして、標準エラー出力を渡します。
+これと `lmm wait` を組み合わせると、メールが届いた時点でエージェントを起こせます（送信側は `lmm post` するだけで済みます）。
+
+例: `PATH` の通った場所に置くスクリプト `lmm-wake`
+
+```bash
+#!/bin/sh
+# 新着メールが届くまで待ち、届いたら展開して、終了コード 2 でエージェントを起こす
+lock="${TMPDIR:-/tmp}/lmm-wake.$(id -u).$(printf '%s' "$PWD" | cksum | cut -d' ' -f1)"
+exec 9>>"$lock"
+flock -n 9 || exit 0                      # 待機は作業ディレクトリごとに 1 つだけ
+paths=$(lmm wait --all --timeout 86000) || exit 0   # 時間切れ（3）やエラーでは起こさない
+printf '新着メッセージがあります。次のディレクトリの index.md を読んで対応し、処理後に削除してください:\n%s\n' "$paths" >&2
+exit 2
+```
+
+`.claude/settings.json` で、起動時と応答の終了時に待機を始めます。
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "lmm-wake", "asyncRewake": true, "timeout": 86400 }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "lmm-wake", "asyncRewake": true, "timeout": 86400 }] }
+    ]
+  }
+}
+```
+
+- 同じアドレスで `lmm hook` と一緒に使うと、どちらか先に動いた方が受け取ります。どちらか一方にしてください。
+- Claude Code は `asyncRewake` のフックにも `timeout` を適用し、超えると打ち切ります。`lmm wait --timeout` はそれより短くし、時間切れのときも 2 を返して待機をやり直させる方法もあります（下記の実装は 6 日ごとに起こし直します）。
+- 2 以外の終了コードではエージェントを起こしません。`lmm` のエラーを 2 にしないでください。
+- 親プロセスの終了の検出、待機中のプロセス ID の記録などを加えた実装は、[ai-dagu-workflows](https://github.com/szk302/ai-dagu-workflows) の `bin/agent-mail-wait` にあります。
+
 ## 開発
 
 ```bash
