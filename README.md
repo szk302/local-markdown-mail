@@ -73,6 +73,7 @@ lmm wait --in-reply-to "$id" --timeout 60
 | `lmm hook [DIR]` | AI CLI のフックから呼び、新着があれば通知する |
 | `lmm box create/list/remove` | メールボックスを管理する |
 | `lmm config show [-C DIR] [--origin]` | 有効な設定を表示する |
+| `lmm config paths [-C DIR] [--field KEY]` | 自分のアドレスと、解決したディレクトリを表示する |
 
 終了コードは、0 が成功、1 が実行時エラー、2 が使い方の誤り・設定エラー、3 が `lmm wait` の時間切れ、128+N がシグナルによる中断です。
 
@@ -230,6 +231,24 @@ AI CLI のフックから呼ぶコマンドです。新着を展開し、1 通�
 | :--- | :--- | :--- | :--- |
 | `-C DIR` | 任意 | カレントディレクトリ | 設定を探し始めるディレクトリ。そのディレクトリで実行したものとして、データディレクトリとグローバル設定も決めます |
 | `--origin` | 任意 | オフ | 各値の後ろに、その値を決めた場所（設定ファイルのパス、環境変数名、`(default)`）をコメントで付けます |
+
+### `lmm config paths [-C DIR] [--field KEY]`
+
+自分のアドレスと、データディレクトリ・展開先・下書きの置き場を、各コマンドと同じ決め方で解決して表示します。ほかのツールが、lmm の決め方を写さずに使えるようにするためのコマンドです。
+
+```yaml
+name: coder
+data_dir: /home/u/repo/.lmm
+receive_dir: /home/u/repo/.worktree/coder/.lmm-inbox/coder
+draft_dir: /home/u/repo/.worktree/coder/.lmm-drafts/coder
+```
+
+| オプション | 必須 | 既定値 | 説明 |
+| :--- | :--- | :--- | :--- |
+| `-C DIR` | 任意 | カレントディレクトリ | `lmm config show` と同じ |
+| `--field KEY` | 任意 | — | 1 つの値だけを出力します（`name`、`data_dir`、`receive_dir`、`draft_dir`）。値が決まらなければ、何も出力せずに終了コード 1 です |
+
+- 自分のアドレスが決まらない場合、`name` と、アドレスを含む置き場（組み込みのデフォルトなど）は表示しません。
 
 ## 環境変数と設定
 

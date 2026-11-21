@@ -9,14 +9,17 @@ pub mod receive;
 pub mod show;
 pub mod wait;
 
+use std::ffi::OsString;
 use std::io::Write;
-use std::path::PathBuf;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 
 use crate::cli::{BoxCommand, Cli, Command, ConfigCommand};
 use crate::config::Config;
 use crate::env;
 use crate::error::{IoContext, LmmError, Result};
 use crate::mailbox::DataDir;
+use crate::yaml;
 
 /// Common execution context.
 pub struct Ctx {
@@ -40,9 +43,10 @@ impl Ctx {
     }
 }
 
-fn config_show(dir: Option<&std::path::Path>, origin: bool) -> Result<()> {
+/// The start directory of `lmm config` (`-C`, §10.7).
+fn start_dir(dir: Option<&Path>) -> Result<PathBuf> {
     let cwd = env::cwd()?;
-    let start = match dir {
+    Ok(match dir {
         Some(d) => {
             let d = env::absolute_from(&cwd, d);
             if !std::fs::metadata(&d).is_ok_and(|m| m.is_dir()) {
@@ -57,13 +61,81 @@ fn config_show(dir: Option<&std::path::Path>, origin: bool) -> Result<()> {
                 .ctx(|| format!("cannot resolve {}", d.display()))?
         }
         None => cwd,
-    };
-    // As if run in `start`.
-    let ctx = Ctx::load(start)?;
+    })
+}
+
+fn config_show(dir: Option<&Path>, origin: bool) -> Result<()> {
+    // As if run in the start directory.
+    let ctx = Ctx::load(start_dir(dir)?)?;
     let mut out = std::io::stdout().lock();
     out.write_all(ctx.cfg.show(origin).as_bytes())
         .and_then(|_| out.flush())
         .ctx(|| "cannot write to stdout".to_string())
+}
+
+const PATH_KEYS: [&str; 4] = ["name", "data_dir", "receive_dir", "draft_dir"];
+
+/// `lmm config paths` (§10.9): your address and the directories, resolved
+/// the way the commands resolve them, so that other tools need not copy the
+/// rules.
+fn config_paths(dir: Option<&Path>, field: Option<&str>) -> Result<()> {
+    if let Some(f) = field
+        && !PATH_KEYS.contains(&f)
+    {
+        return Err(LmmError::usage(format!(
+            "unknown field {f:?} (use one of {})",
+            PATH_KEYS.join(", ")
+        )));
+    }
+    let ctx = Ctx::load(start_dir(dir)?)?;
+    let name = ctx.cfg.name()?;
+    // Like `lmm receive` and `lmm draft` without DIR. A directory that
+    // needs your address is unknown when you have none.
+    let resolve = |v: &crate::config::Val<String>, key: &str| -> Result<Option<PathBuf>> {
+        match v.resolve_path(key, name.as_deref(), &ctx.cwd) {
+            Ok(p) => Ok(Some(p)),
+            Err(_) if name.is_none() => Ok(None),
+            Err(e) => Err(e),
+        }
+    };
+    let values: [(&str, Option<OsString>); 4] = [
+        ("name", name.clone().map(OsString::from)),
+        ("data_dir", Some(ctx.data_dir.root.clone().into_os_string())),
+        (
+            "receive_dir",
+            resolve(&ctx.cfg.receive_dir, "receive.dir")?.map(PathBuf::into_os_string),
+        ),
+        (
+            "draft_dir",
+            resolve(&ctx.cfg.draft_dir, "draft.dir")?.map(PathBuf::into_os_string),
+        ),
+    ];
+    let mut out = std::io::stdout().lock();
+    match field {
+        Some(f) => {
+            let Some((_, Some(v))) = values.iter().find(|(k, _)| *k == f) else {
+                return Err(LmmError::Exit(1));
+            };
+            out.write_all(v.as_bytes())
+                .and_then(|_| out.write_all(b"\n"))
+                .ctx(|| "cannot write to stdout".to_string())?;
+        }
+        None => {
+            let mut text = String::new();
+            for (k, v) in &values {
+                if let Some(v) = v {
+                    let s = v.to_string_lossy().into_owned();
+                    text.push_str(&format!(
+                        "{k}: {}\n",
+                        yaml::emit_inline(&yaml::Node::Str(s.clone())).unwrap_or(s)
+                    ));
+                }
+            }
+            out.write_all(text.as_bytes())
+                .ctx(|| "cannot write to stdout".to_string())?;
+        }
+    }
+    out.flush().ctx(|| "cannot write to stdout".to_string())
 }
 
 /// Run a parsed command line.
@@ -88,6 +160,9 @@ pub fn run(cli: &Cli) -> Result<()> {
         }
         Command::Config(ConfigCommand::Show { dir, origin }) => {
             config_show(dir.as_deref(), *origin)
+        }
+        Command::Config(ConfigCommand::Paths { dir, field }) => {
+            config_paths(dir.as_deref(), field.as_deref())
         }
     }
 }

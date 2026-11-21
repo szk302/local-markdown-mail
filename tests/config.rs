@@ -206,3 +206,61 @@ fn unreadable_config_is_skipped() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("cannot read config"));
     assert!(String::from_utf8_lossy(&o.stdout).contains("timeout: 30"));
 }
+
+#[test]
+fn config_paths_resolve_like_the_commands() {
+    let e = Env::new();
+    // A project root with a worktree-like subdirectory (§11).
+    fs::write(
+        e.work.join(".lmm.yml"),
+        "root: true\ndata_dir: \"{root_dir}/.mail\"\nreceive:\n  dir: \"{config_dir}/.lmm-inbox/{name}\"\n",
+    )
+    .unwrap();
+    let wt = e.work.join("wt");
+    fs::create_dir(&wt).unwrap();
+    fs::write(wt.join(".lmm.local.yml"), "root: false\nname: coder\n").unwrap();
+    let paths = |args: &[&str]| {
+        e.cmd(None)
+            .env_remove("LMM_DATA_DIR")
+            .args(["config", "paths"])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let o = paths(&["-C", "wt"]);
+    assert!(o.status.success(), "{}", show(&o));
+    let out = String::from_utf8_lossy(&o.stdout);
+    let data = e.work.join(".mail").display().to_string();
+    let inbox = e.work.join(".lmm-inbox/coder").display().to_string();
+    assert_eq!(
+        out,
+        format!(
+            "name: coder\ndata_dir: {data}\nreceive_dir: {inbox}\ndraft_dir: {}\n",
+            wt.join(".lmm-drafts/coder").display()
+        )
+    );
+    let o = paths(&["-C", "wt", "--field", "receive_dir"]);
+    assert_eq!(String::from_utf8_lossy(&o.stdout), format!("{inbox}\n"));
+
+    // LMM_NAME and LMM_RECEIVE_DIR win, as for the commands.
+    let o = e
+        .cmd(Some("other"))
+        .env("LMM_RECEIVE_DIR", "in")
+        .args(["config", "paths", "--field", "receive_dir"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&o.stdout),
+        format!("{}\n", e.work.join("in").display())
+    );
+
+    // Without an address, the name and the directories that need it are
+    // unknown: not shown, and --field fails with exit code 1.
+    let o = paths(&[]);
+    assert!(o.status.success(), "{}", show(&o));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert_eq!(out, format!("data_dir: {data}\n"));
+    assert_eq!(code(&paths(&["--field", "name"])), 1);
+    assert_eq!(code(&paths(&["--field", "receive_dir"])), 1);
+    assert_eq!(code(&paths(&["--field", "nope"])), 2);
+}
