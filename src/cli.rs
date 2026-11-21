@@ -200,4 +200,13 @@ pub enum ConfigCommand {
         #[arg(long = "origin")]
         origin: bool,
     },
+    /// Show your address and the directories as the commands resolve them
+    Paths {
+        /// Start directory (default: current directory)
+        #[arg(short = 'C', value_name = "DIR")]
+        dir: Option<PathBuf>,
+        /// Print one value only: name, data_dir, receive_dir or draft_dir
+        #[arg(long = "field", value_name = "KEY")]
+        field: Option<String>,
+    },
 }
