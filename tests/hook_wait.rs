@@ -268,6 +268,29 @@ fn wait_timeout_usage_and_missing_box() {
 }
 
 #[test]
+fn wait_looks_again_at_the_deadline() {
+    // The message arrives after the first look and before the deadline,
+    // which comes before the next look (every second).
+    let e = setup();
+    let dir = e.work.join("deadline");
+    let child = e
+        .cmd(Some("beta"))
+        .args(["wait", "--timeout", "0.8"])
+        .arg(&dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    e.wait_for_dir(&dir);
+    std::thread::sleep(Duration::from_millis(200));
+    let (_, p) = send(&e, "between", "x\n");
+    let o = child.wait_with_output().unwrap();
+    assert_eq!(code(&o), 0, "{}", show(&o));
+    assert!(String::from_utf8_lossy(&o.stdout).contains(p.file_name().unwrap().to_str().unwrap()));
+    assert!(entries(&e.new_dir("beta")).is_empty());
+}
+
+#[test]
 fn wait_delivers_when_message_arrives_and_handles_signals() {
     let e = setup();
     let child = e

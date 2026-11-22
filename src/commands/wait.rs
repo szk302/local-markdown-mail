@@ -94,12 +94,16 @@ pub fn run(ctx: &Ctx, a: &WaitArgs) -> Result<()> {
         meta,
     };
     let f = |i: &Inspected| filter.matches(i);
-    let start = Instant::now();
+    // A deadline beyond what `Instant` can represent means "no limit".
+    let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
     let new = ctx.data_dir.new_dir(&name);
     loop {
         if let Some(e) = interrupted() {
             return Err(e);
         }
+        // At the deadline, look once more before giving up: a message may
+        // have arrived since the last look (§7.4).
+        let last = deadline.is_some_and(|d| Instant::now() >= d);
         ctx.data_dir.require(&name, "your")?;
         let has = fsutil::count_visible_entries(&new)
             .map_err(|e| LmmError::runtime(format!("cannot read {}: {e}", new.display())))?
@@ -132,18 +136,19 @@ pub fn run(ctx: &Ctx, a: &WaitArgs) -> Result<()> {
                 return Ok(());
             }
         }
-        // Sleep until the next poll, staying responsive to signals and the timeout.
+        if last {
+            return Err(LmmError::Timeout);
+        }
+        // Sleep until the next poll or the deadline, whichever comes first,
+        // staying responsive to signals.
         let next = Instant::now() + POLL_INTERVAL;
+        let until = deadline.map_or(next, |d| d.min(next));
         loop {
-            if let Some(t) = timeout
-                && start.elapsed() >= t
-            {
-                return Err(LmmError::Timeout);
-            }
-            if interrupted().is_some() || Instant::now() >= next {
+            let now = Instant::now();
+            if interrupted().is_some() || now >= until {
                 break;
             }
-            thread::sleep(TICK);
+            thread::sleep(TICK.min(until - now));
         }
     }
 }
