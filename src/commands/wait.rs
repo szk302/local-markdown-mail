@@ -12,6 +12,7 @@ use crate::commands::receive::{self, Options};
 use crate::error::{LmmError, Result};
 use crate::frontmatter;
 use crate::fsutil;
+use crate::lock;
 use crate::message::Inspected;
 use crate::yaml::Node;
 
@@ -94,12 +95,16 @@ pub fn run(ctx: &Ctx, a: &WaitArgs) -> Result<()> {
         meta,
     };
     let f = |i: &Inspected| filter.matches(i);
-    let start = Instant::now();
+    // A deadline beyond what `Instant` can represent means "no limit".
+    let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
     let new = ctx.data_dir.new_dir(&name);
     loop {
         if let Some(e) = interrupted() {
             return Err(e);
         }
+        // At the deadline, look once more before giving up: a message may
+        // have arrived since the last look (§7.4).
+        let last = deadline.is_some_and(|d| Instant::now() >= d);
         ctx.data_dir.require(&name, "your")?;
         let has = fsutil::count_visible_entries(&new)
             .map_err(|e| LmmError::runtime(format!("cannot read {}: {e}", new.display())))?
@@ -116,34 +121,51 @@ pub fn run(ctx: &Ctx, a: &WaitArgs) -> Result<()> {
                 print: true,
                 stop: Some(&sig),
             };
+            // Wait for the receive lock no longer than the deadline (§7.4).
+            let lock_wait = deadline.map_or(lock::DEFAULT_TIMEOUT, |d| {
+                d.saturating_duration_since(Instant::now())
+                    .min(lock::DEFAULT_TIMEOUT)
+            });
             // A recorded signal wins over any error from receiving (e.g. a
             // lock timeout that raced with the signal), §7.4.
-            let out = match receive::receive_locked(&ctx.data_dir, &name, &dest, &opts) {
-                Ok(out) => out,
+            let out = match receive::receive_within(&ctx.data_dir, &name, &dest, &opts, lock_wait) {
+                Ok(Some(out)) => out,
+                Ok(None) => {
+                    if let Some(e) = interrupted() {
+                        return Err(e);
+                    }
+                    if deadline.is_some_and(|d| Instant::now() >= d) {
+                        return Err(LmmError::Timeout);
+                    }
+                    return Err(LmmError::runtime(format!(
+                        "timed out waiting for the receive lock of {name}"
+                    )));
+                }
                 Err(e) => return Err(interrupted().unwrap_or(e)),
             };
             if let Some(e) = interrupted() {
                 return Err(e);
             }
-            if out.failures > 0 {
+            if out.failures > 0 || out.output_failed {
                 return Err(LmmError::Exit(1));
             }
             if !out.received.is_empty() {
                 return Ok(());
             }
         }
-        // Sleep until the next poll, staying responsive to signals and the timeout.
+        if last {
+            return Err(LmmError::Timeout);
+        }
+        // Sleep until the next poll or the deadline, whichever comes first,
+        // staying responsive to signals.
         let next = Instant::now() + POLL_INTERVAL;
+        let until = deadline.map_or(next, |d| d.min(next));
         loop {
-            if let Some(t) = timeout
-                && start.elapsed() >= t
-            {
-                return Err(LmmError::Timeout);
-            }
-            if interrupted().is_some() || Instant::now() >= next {
+            let now = Instant::now();
+            if interrupted().is_some() || now >= until {
                 break;
             }
-            thread::sleep(TICK);
+            thread::sleep(TICK.min(until - now));
         }
     }
 }

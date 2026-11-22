@@ -444,9 +444,11 @@ Claude Code の `asyncRewake` フックは、バックグラウンドで動き�
 ```bash
 #!/bin/sh
 # 新着メールが届くまで待ち、届いたら展開して、終了コード 2 でエージェントを起こす
-lock="${TMPDIR:-/tmp}/lmm-wake.$(id -u).$(printf '%s' "$PWD" | cksum | cut -d' ' -f1)"
+# 待機はメールボックス（データディレクトリとアドレスの組）ごとに 1 つだけ
+box=$(lmm config paths --field data_dir && lmm config paths --field name) || exit 0
+lock="${TMPDIR:-/tmp}/lmm-wake.$(id -u).$(printf '%s' "$box" | cksum | cut -d' ' -f1)"
 exec 9>>"$lock"
-flock -n 9 || exit 0                      # 待機は作業ディレクトリごとに 1 つだけ
+flock -n 9 || exit 0
 paths=$(lmm wait --all --timeout 86000) || exit 0   # 時間切れ（3）やエラーでは起こさない
 printf '新着メッセージがあります。次のディレクトリの index.md を読んで対応し、処理後に削除してください:\n%s\n' "$paths" >&2
 exit 2
@@ -467,10 +469,10 @@ exit 2
 }
 ```
 
+- ロックは、データディレクトリとアドレスの組ごとです。同じディレクトリで `LMM_NAME` を変えて複数のエージェントを動かしても、それぞれのアドレスで待機できます。
 - 同じアドレスで `lmm hook` と一緒に使うと、どちらか先に動いた方が受け取ります。どちらか一方にしてください。
-- Claude Code は `asyncRewake` のフックにも `timeout` を適用し、超えると打ち切ります。`lmm wait --timeout` はそれより短くし、時間切れのときも 2 を返して待機をやり直させる方法もあります（下記の実装は 6 日ごとに起こし直します）。
+- Claude Code は `asyncRewake` のフックにも `timeout` を適用し、超えると打ち切ります。`lmm wait --timeout` はそれより短くし、時間切れのときも 2 を返して待機をやり直させる方法もあります。
 - 2 以外の終了コードではエージェントを起こしません。`lmm` のエラーを 2 にしないでください。
-- 親プロセスの終了の検出、待機中のプロセス ID の記録などを加えた実装は、[ai-dagu-workflows](https://github.com/szk302/ai-dagu-workflows) の `bin/agent-mail-wait` にあります。
 
 ## 開発
 

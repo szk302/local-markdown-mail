@@ -151,6 +151,26 @@ fn hook_timeout_kills_process_group() {
 }
 
 #[test]
+fn hook_does_not_keep_its_output_open_for_a_background_process() {
+    // The command ends at once but leaves a process behind: the caller,
+    // which reads the hook's output to the end, must not wait for it.
+    let e = setup();
+    send(&e, "m", "x\n");
+    let start = Instant::now();
+    let o = e
+        .cmd(Some("beta"))
+        .env("LMM_HOOK_CMD", "echo '{}'; echo note >&2; sleep 5 &")
+        .arg("hook")
+        .output()
+        .unwrap();
+    let took = start.elapsed();
+    assert_eq!(code(&o), 0, "{}", show(&o));
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "{}\n");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("note"));
+    assert!(took < Duration::from_secs(3), "took {took:?}");
+}
+
+#[test]
 fn hook_config_error_is_1() {
     let e = setup();
     send(&e, "m", "x\n");
@@ -265,6 +285,55 @@ fn wait_timeout_usage_and_missing_box() {
     e.ok(None, &["box", "remove", "beta"]);
     let o = child.wait_with_output().unwrap();
     assert_eq!(code(&o), 1, "{}", show(&o));
+}
+
+#[test]
+fn wait_looks_again_at_the_deadline() {
+    // The message arrives after the first look and before the deadline,
+    // which comes before the next look (every second).
+    let e = setup();
+    let dir = e.work.join("deadline");
+    let child = e
+        .cmd(Some("beta"))
+        .args(["wait", "--timeout", "0.8"])
+        .arg(&dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    e.wait_for_dir(&dir);
+    std::thread::sleep(Duration::from_millis(200));
+    let (_, p) = send(&e, "between", "x\n");
+    let o = child.wait_with_output().unwrap();
+    assert_eq!(code(&o), 0, "{}", show(&o));
+    assert!(String::from_utf8_lossy(&o.stdout).contains(p.file_name().unwrap().to_str().unwrap()));
+    assert!(entries(&e.new_dir("beta")).is_empty());
+}
+
+#[test]
+fn wait_does_not_wait_for_the_receive_lock_past_its_deadline() {
+    // Another receiver holds the lock: wait gives up at its own deadline
+    // (exit 3), not after the lock's 10 s, and leaves the message.
+    let e = setup();
+    send(&e, "m", "x\n");
+    let lockp = e.data_dir.join("locks/receive/beta.lock");
+    fs::create_dir_all(lockp.parent().unwrap()).unwrap();
+    let holder = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lockp)
+        .unwrap();
+    holder.lock().unwrap();
+    let start = Instant::now();
+    let o = e.run(Some("beta"), &["wait", "--timeout", "0.3"]);
+    let took = start.elapsed();
+    assert_eq!(code(&o), 3, "{}", show(&o));
+    assert!(took < Duration::from_secs(3), "took {took:?}");
+    assert_eq!(entries(&e.new_dir("beta")).len(), 1);
+    drop(holder);
+    assert_eq!(code(&e.run(Some("beta"), &["wait", "--timeout", "0.3"])), 0);
 }
 
 #[test]

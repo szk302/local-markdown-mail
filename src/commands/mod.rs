@@ -98,22 +98,22 @@ fn config_paths(dir: Option<&Path>, field: Option<&str>) -> Result<()> {
             Err(e) => Err(e),
         }
     };
-    let values: [(&str, Option<OsString>); 4] = [
-        ("name", name.clone().map(OsString::from)),
-        ("data_dir", Some(ctx.data_dir.root.clone().into_os_string())),
-        (
-            "receive_dir",
-            resolve(&ctx.cfg.receive_dir, "receive.dir")?.map(PathBuf::into_os_string),
-        ),
-        (
-            "draft_dir",
-            resolve(&ctx.cfg.draft_dir, "draft.dir")?.map(PathBuf::into_os_string),
-        ),
-    ];
+    // Resolved one at a time, so that --field does not fail on a key it
+    // does not show (§10.9).
+    let value = |key: &str| -> Result<Option<OsString>> {
+        Ok(match key {
+            "name" => name.clone().map(OsString::from),
+            "data_dir" => Some(ctx.data_dir.root.clone().into_os_string()),
+            "receive_dir" => {
+                resolve(&ctx.cfg.receive_dir, "receive.dir")?.map(PathBuf::into_os_string)
+            }
+            _ => resolve(&ctx.cfg.draft_dir, "draft.dir")?.map(PathBuf::into_os_string),
+        })
+    };
     let mut out = std::io::stdout().lock();
     match field {
         Some(f) => {
-            let Some((_, Some(v))) = values.iter().find(|(k, _)| *k == f) else {
+            let Some(v) = value(f)? else {
                 return Err(LmmError::Exit(1));
             };
             out.write_all(v.as_bytes())
@@ -122,8 +122,8 @@ fn config_paths(dir: Option<&Path>, field: Option<&str>) -> Result<()> {
         }
         None => {
             let mut text = String::new();
-            for (k, v) in &values {
-                if let Some(v) = v {
+            for k in PATH_KEYS {
+                if let Some(v) = value(k)? {
                     let s = v.to_string_lossy().into_owned();
                     text.push_str(&format!(
                         "{k}: {}\n",

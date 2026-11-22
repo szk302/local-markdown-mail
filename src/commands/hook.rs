@@ -1,7 +1,8 @@
 //! `lmm hook` (§8).
 
 use std::ffi::{OsStr, OsString};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -210,27 +211,45 @@ fn run_notify_inner(
     timeout: Duration,
     sig: &AtomicUsize,
 ) -> Result<i32> {
+    // Standard output and error go through pipes that lmm forwards, so that
+    // a process the command leaves running (`cmd &`) does not keep the
+    // hook's output open after the command has ended (§8.4).
     let mut child = Command::new("/bin/sh")
         .arg("-c")
         .arg(cmd)
         .envs(envs.iter().map(|(k, v)| (*k, v.as_os_str())))
         .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .process_group(0)
         .spawn()
         .map_err(|e| LmmError::runtime(format!("cannot run notification command: {e}")))?;
+    let mut out = child.stdout.take().expect("piped stdout");
+    let mut err = child.stderr.take().expect("piped stderr");
+    set_nonblocking(&out);
+    set_nonblocking(&err);
+    let mut forward = || {
+        forward_available(&mut out, &mut io::stdout());
+        forward_available(&mut err, &mut io::stderr());
+    };
     let pgid = child.id() as i32;
     let start = Instant::now();
     // A deadline beyond what `Instant` can represent means "no limit".
     let deadline = start.checked_add(timeout);
     loop {
+        forward();
         match child.try_wait() {
-            Ok(Some(status)) => return Ok(exit_code(status)),
+            Ok(Some(status)) => {
+                // What it wrote before it ended is in the pipes now; do not
+                // wait for the end of the pipes.
+                forward();
+                return Ok(exit_code(status));
+            }
             Ok(None) => {}
             Err(e) => {
                 kill_group(pgid, libc::SIGKILL);
                 let _ = child.wait();
+                forward();
                 return Err(LmmError::runtime(format!(
                     "cannot wait for notification command: {e}"
                 )));
@@ -242,6 +261,7 @@ fn run_notify_inner(
             kill_group(pgid, s);
             let remaining = timeout.saturating_sub(start.elapsed());
             terminate(&mut child, pgid, remaining.min(GRACE));
+            forward();
             return Err(LmmError::Signal(s));
         }
         if deadline.is_some_and(|d| Instant::now() >= d) {
@@ -252,8 +272,39 @@ fn run_notify_inner(
     // Timed out: SIGTERM the whole group, then SIGKILL after 2 seconds.
     kill_group(pgid, libc::SIGTERM);
     terminate(&mut child, pgid, GRACE);
+    forward();
     error_log(format!(
         "notification command timed out after {timeout:?} and was terminated"
     ));
     Ok(1)
+}
+
+/// Make reads from the pipe return at once when it has nothing.
+fn set_nonblocking(pipe: &impl AsRawFd) {
+    let fd = pipe.as_raw_fd();
+    // SAFETY: fcntl on a descriptor this process owns.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags >= 0 {
+            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+    }
+}
+
+/// Copy what the pipe has now to `to`, without waiting for more. Errors
+/// writing to `to` (the caller has gone) are ignored, so that the pipe is
+/// still drained.
+fn forward_available(pipe: &mut impl Read, to: &mut impl Write) {
+    let mut buf = [0u8; 8192];
+    loop {
+        match pipe.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let _ = to.write_all(&buf[..n]);
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    let _ = to.flush();
 }

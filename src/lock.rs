@@ -145,17 +145,32 @@ pub fn acquire_interruptible(
     timeout: Duration,
     stop: Option<&AtomicUsize>,
 ) -> Result<Guard> {
+    try_acquire_interruptible(data_dir, kind, addr, mode, timeout, stop)?.ok_or_else(|| {
+        LmmError::runtime(format!(
+            "timed out waiting for the {} lock of {addr} ({})",
+            kind.label(),
+            lock_path(data_dir, kind, addr).display()
+        ))
+    })
+}
+
+/// Like [`acquire_interruptible`], but `Ok(None)` when `timeout` expires
+/// (`lmm wait --timeout`, §7.4).
+pub fn try_acquire_interruptible(
+    data_dir: &Path,
+    kind: Kind,
+    addr: &str,
+    mode: Mode,
+    timeout: Duration,
+    stop: Option<&AtomicUsize>,
+) -> Result<Option<Guard>> {
     let path = lock_path(data_dir, kind, addr);
     let file = open_lock_file(&path, true)
         .map_err(|e| LmmError::runtime(format!("cannot open lock file {}: {e}", path.display())))?;
     match lock_file_until(&file, mode, Some(timeout), stop) {
-        Ok(Wait::Locked) => Ok(Guard { _file: file }),
+        Ok(Wait::Locked) => Ok(Some(Guard { _file: file })),
         Ok(Wait::Interrupted(s)) => Err(LmmError::Signal(s)),
-        Ok(Wait::TimedOut) => Err(LmmError::runtime(format!(
-            "timed out waiting for the {} lock of {addr} ({})",
-            kind.label(),
-            path.display()
-        ))),
+        Ok(Wait::TimedOut) => Ok(None),
         Err(e) => Err(LmmError::runtime(format!(
             "cannot lock {}: {e}",
             path.display()

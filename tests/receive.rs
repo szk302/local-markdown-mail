@@ -221,3 +221,39 @@ fn abandoned_work_dirs_are_cleaned_but_live_ones_kept() {
     e.ok(Some("beta"), &["receive"]);
     assert!(entries(&tmp).is_empty());
 }
+
+#[test]
+fn receive_stops_when_it_cannot_write_a_path() {
+    // The reader of stdout is gone (EPIPE): the caller gets no path, so
+    // receiving must stop and say on stderr what was extracted.
+    let e = setup();
+    for i in 0..3 {
+        send(&e, &format!("m{i}\n"));
+    }
+    let dir = e.work.join("out");
+    for args in [&["receive", "--all"][..], &["wait", "--all"][..]] {
+        let mut child = e
+            .cmd(Some("beta"))
+            .args(args)
+            .arg(&dir)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        drop(child.stdout.take());
+        let o = child.wait_with_output().unwrap();
+        assert_eq!(code(&o), 1, "{args:?}: {}", show(&o));
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(err.contains("cannot write the path"), "{err}");
+        let extracted = entries(&dir);
+        let last = extracted.last().unwrap();
+        assert!(
+            err.contains(&format!("extracted {}", dir.join(last).display())),
+            "{err}"
+        );
+    }
+    // One message per run; the third stays in new/.
+    assert_eq!(entries(&dir).len(), 2);
+    assert_eq!(entries(&e.cur_dir("beta")).len(), 2);
+    assert_eq!(entries(&e.new_dir("beta")).len(), 1);
+}

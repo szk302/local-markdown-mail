@@ -264,3 +264,37 @@ fn config_paths_resolve_like_the_commands() {
     assert_eq!(code(&paths(&["--field", "receive_dir"])), 1);
     assert_eq!(code(&paths(&["--field", "nope"])), 2);
 }
+
+#[test]
+fn config_paths_field_resolves_only_that_key() {
+    // draft.dir uses {root_dir} without a root: true above, which is an
+    // error only for draft_dir.
+    let e = Env::new();
+    let dir = e.tmp.path().canonicalize().unwrap().join("no-root");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join(".lmm.yml"),
+        "draft:\n  dir: \"{root_dir}/drafts\"\n",
+    )
+    .unwrap();
+    let paths = |args: &[&str]| {
+        e.cmd(Some("coder"))
+            .current_dir(&dir)
+            .args(["config", "paths"])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert_eq!(code(&paths(&["--field", "draft_dir"])), 2);
+    let o = paths(&["--field", "name"]);
+    assert_eq!(code(&o), 0, "{}", show(&o));
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "coder\n");
+    let o = paths(&["--field", "data_dir"]);
+    assert_eq!(code(&o), 0, "{}", show(&o));
+    assert_eq!(
+        String::from_utf8_lossy(&o.stdout),
+        format!("{}\n", e.data_dir.display())
+    );
+    // The full listing still reports the error.
+    assert_eq!(code(&paths(&[])), 2);
+}

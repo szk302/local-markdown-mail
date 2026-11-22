@@ -134,24 +134,32 @@ pub enum Target {
 }
 
 /// Write a message into a work directory of `addr` and publish it (§6.4 steps 4-6).
-fn deliver(
+/// A message written into a work directory (§6.4 step 4), ready to publish.
+struct Staged {
+    wd: WorkDir,
+    /// Bytes written: `index.md` and the attachments.
+    size: u64,
+}
+
+/// Write `index` and the attachments from `src_dir` into a new work
+/// directory of `addr` (§6.4 step 4).
+fn stage(
     data_dir: &DataDir,
     addr: &str,
     index: &[u8],
     src_dir: &Path,
     attachments: &[OsString],
-    base: &str,
-    target: Target,
-) -> Result<PathBuf> {
+) -> Result<Staged> {
     let wd = WorkDir::create(data_dir, addr)?;
     let msg = wd.msg();
     fsutil::write_new(&msg.join(INDEX), index)
         .ctx(|| format!("cannot write {}", msg.join(INDEX).display()))?;
+    let mut size = index.len() as u64;
     for name in attachments {
         let src = src_dir.join(name);
         let dst = msg.join(name);
         match fsutil::copy_file_new(&src, &dst) {
-            Ok(_) => {}
+            Ok(n) => size += n,
             Err(CopyError::Dest(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 return Err(LmmError::runtime(format!(
                     "file name collision while writing {} (the file system treats different names as the same file)",
@@ -167,7 +175,19 @@ fn deliver(
         }
     }
     fsutil::fsync_dir(&msg).ctx(|| format!("cannot fsync {}", msg.display()))?;
+    Ok(Staged { wd, size })
+}
 
+/// Move a staged message into `addr`'s `new/` or `sent/` (§6.4 steps 5-6).
+fn publish(
+    data_dir: &DataDir,
+    addr: &str,
+    staged: Staged,
+    base: &str,
+    target: Target,
+) -> Result<PathBuf> {
+    let wd = staged.wd;
+    let msg = wd.msg();
     let lock = data_dir.lock(Kind::Box, addr, Mode::Shared)?;
     if !data_dir.exists(addr) {
         return Err(LmmError::runtime(format!(
@@ -347,28 +367,30 @@ pub fn run(ctx: &Ctx, a: &PostArgs) -> Result<()> {
         )));
     }
 
-    // 4-5. Write and publish.
-    let base = message::dir_name(created, &name, &to, &id);
-    let path = deliver(
-        &ctx.data_dir,
-        &to,
-        &index,
-        &dir,
-        &listing.attachments,
-        &base,
-        Target::Inbox,
-    )?;
-
-    // 6. Sent copy (failures are warnings).
-    if let Err(e) = deliver(
+    // 4. Write. DIR is read once: the sent copy is written from the
+    // recipient's copy, so both have the same content even if DIR changes
+    // meanwhile (§6.4 step 6).
+    let inbox = stage(&ctx.data_dir, &to, &index, &dir, &listing.attachments)?;
+    if inbox.size > limit {
+        return Err(LmmError::runtime(format!(
+            "message too large: {} bytes exceeds max_message_size ({limit} bytes; the files changed while being sent)",
+            inbox.size
+        )));
+    }
+    let sent = stage(
         &ctx.data_dir,
         &name,
         &index,
-        &dir,
+        &inbox.wd.msg(),
         &listing.attachments,
-        &base,
-        Target::Sent,
-    ) {
+    );
+
+    // 5. Publish.
+    let base = message::dir_name(created, &name, &to, &id);
+    let path = publish(&ctx.data_dir, &to, inbox, &base, Target::Inbox)?;
+
+    // 6. Sent copy (failures are warnings).
+    if let Err(e) = sent.and_then(|s| publish(&ctx.data_dir, &name, s, &base, Target::Sent)) {
         warn(format!(
             "message delivered but the sent copy was not saved: {e}"
         ));
