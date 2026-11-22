@@ -291,6 +291,32 @@ fn wait_looks_again_at_the_deadline() {
 }
 
 #[test]
+fn wait_does_not_wait_for_the_receive_lock_past_its_deadline() {
+    // Another receiver holds the lock: wait gives up at its own deadline
+    // (exit 3), not after the lock's 10 s, and leaves the message.
+    let e = setup();
+    send(&e, "m", "x\n");
+    let lockp = e.data_dir.join("locks/receive/beta.lock");
+    fs::create_dir_all(lockp.parent().unwrap()).unwrap();
+    let holder = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lockp)
+        .unwrap();
+    holder.lock().unwrap();
+    let start = Instant::now();
+    let o = e.run(Some("beta"), &["wait", "--timeout", "0.3"]);
+    let took = start.elapsed();
+    assert_eq!(code(&o), 3, "{}", show(&o));
+    assert!(took < Duration::from_secs(3), "took {took:?}");
+    assert_eq!(entries(&e.new_dir("beta")).len(), 1);
+    drop(holder);
+    assert_eq!(code(&e.run(Some("beta"), &["wait", "--timeout", "0.3"])), 0);
+}
+
+#[test]
 fn wait_delivers_when_message_arrives_and_handles_signals() {
     let e = setup();
     let child = e

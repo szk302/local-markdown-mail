@@ -6,6 +6,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use crate::cli::ReceiveArgs;
 use crate::commands::Ctx;
@@ -342,6 +343,31 @@ pub fn receive_locked(
     data_dir.require(name, "your")?;
     mailbox::cleanup_abandoned(data_dir, name);
     process(data_dir, name, dest, opts)
+}
+
+/// Like [`receive_locked`], but waits for the receive lock up to
+/// `lock_wait` only: `Ok(None)` if it is not free by then (§7.4).
+pub fn receive_within(
+    data_dir: &DataDir,
+    name: &str,
+    dest: &Path,
+    opts: &Options,
+    lock_wait: Duration,
+) -> Result<Option<Outcome>> {
+    let Some(_lock) = lock::try_acquire_interruptible(
+        &data_dir.root,
+        Kind::Receive,
+        name,
+        Mode::Exclusive,
+        lock_wait,
+        opts.stop,
+    )?
+    else {
+        return Ok(None);
+    };
+    data_dir.require(name, "your")?;
+    mailbox::cleanup_abandoned(data_dir, name);
+    process(data_dir, name, dest, opts).map(Some)
 }
 
 pub fn run(ctx: &Ctx, a: &ReceiveArgs) -> Result<()> {

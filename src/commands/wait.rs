@@ -12,6 +12,7 @@ use crate::commands::receive::{self, Options};
 use crate::error::{LmmError, Result};
 use crate::frontmatter;
 use crate::fsutil;
+use crate::lock;
 use crate::message::Inspected;
 use crate::yaml::Node;
 
@@ -120,10 +121,26 @@ pub fn run(ctx: &Ctx, a: &WaitArgs) -> Result<()> {
                 print: true,
                 stop: Some(&sig),
             };
+            // Wait for the receive lock no longer than the deadline (§7.4).
+            let lock_wait = deadline.map_or(lock::DEFAULT_TIMEOUT, |d| {
+                d.saturating_duration_since(Instant::now())
+                    .min(lock::DEFAULT_TIMEOUT)
+            });
             // A recorded signal wins over any error from receiving (e.g. a
             // lock timeout that raced with the signal), §7.4.
-            let out = match receive::receive_locked(&ctx.data_dir, &name, &dest, &opts) {
-                Ok(out) => out,
+            let out = match receive::receive_within(&ctx.data_dir, &name, &dest, &opts, lock_wait) {
+                Ok(Some(out)) => out,
+                Ok(None) => {
+                    if let Some(e) = interrupted() {
+                        return Err(e);
+                    }
+                    if deadline.is_some_and(|d| Instant::now() >= d) {
+                        return Err(LmmError::Timeout);
+                    }
+                    return Err(LmmError::runtime(format!(
+                        "timed out waiting for the receive lock of {name}"
+                    )));
+                }
                 Err(e) => return Err(interrupted().unwrap_or(e)),
             };
             if let Some(e) = interrupted() {
