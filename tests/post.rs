@@ -359,3 +359,50 @@ fn reply_to_and_meta_from_config() {
     let idx = fs::read_to_string(p.join("index.md")).unwrap();
     assert!(idx.contains("project: cli\n"), "{idx}");
 }
+
+#[test]
+fn delivered_and_sent_copies_match_while_the_draft_changes() {
+    // Another process rewrites the attachment while lmm posts: the
+    // recipient and the sent copy must still get the same bytes.
+    let e = Env::new();
+    e.create_box("alpha");
+    e.create_box("beta");
+    let draft = e.msg_dir("changing", "x\n", &[("att.bin", &[b'A'; 64 * 1024])]);
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer = {
+        let stop = stop.clone();
+        let att = draft.join("att.bin");
+        let tmp = e.work.join("att.next");
+        std::thread::spawn(move || {
+            let mut n = 0u8;
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                fs::write(&tmp, vec![b'A' + n % 26; 64 * 1024]).unwrap();
+                fs::rename(&tmp, &att).unwrap();
+                n = n.wrapping_add(1);
+            }
+        })
+    };
+    let mut posted = Vec::new();
+    for _ in 0..30 {
+        posted.push(e.post("alpha", &["-t", "beta", draft.to_str().unwrap()]));
+    }
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    writer.join().unwrap();
+    let sent = e.sent_dir("alpha");
+    for (id, path) in posted {
+        let copy = entries(&sent)
+            .into_iter()
+            .map(|n| sent.join(n))
+            .find(|d| {
+                fs::read_to_string(d.join("index.md"))
+                    .unwrap()
+                    .contains(&id)
+            })
+            .unwrap();
+        assert_eq!(
+            fs::read(path.join("att.bin")).unwrap(),
+            fs::read(copy.join("att.bin")).unwrap(),
+            "message {id}"
+        );
+    }
+}
