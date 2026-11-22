@@ -151,6 +151,26 @@ fn hook_timeout_kills_process_group() {
 }
 
 #[test]
+fn hook_does_not_keep_its_output_open_for_a_background_process() {
+    // The command ends at once but leaves a process behind: the caller,
+    // which reads the hook's output to the end, must not wait for it.
+    let e = setup();
+    send(&e, "m", "x\n");
+    let start = Instant::now();
+    let o = e
+        .cmd(Some("beta"))
+        .env("LMM_HOOK_CMD", "echo '{}'; echo note >&2; sleep 5 &")
+        .arg("hook")
+        .output()
+        .unwrap();
+    let took = start.elapsed();
+    assert_eq!(code(&o), 0, "{}", show(&o));
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "{}\n");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("note"));
+    assert!(took < Duration::from_secs(3), "took {took:?}");
+}
+
+#[test]
 fn hook_config_error_is_1() {
     let e = setup();
     send(&e, "m", "x\n");
