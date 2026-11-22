@@ -129,7 +129,7 @@ pub fn run(ctx: &Ctx, a: &WaitArgs) -> Result<()> {
             if let Some(e) = interrupted() {
                 return Err(e);
             }
-            if out.failures > 0 {
+            if out.failures > 0 || out.output_failed {
                 return Err(LmmError::Exit(1));
             }
             if !out.received.is_empty() {

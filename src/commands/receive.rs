@@ -65,6 +65,8 @@ pub struct Outcome {
     pub moved_to_failed: usize,
     /// Entries left in `new/` because `max` was reached.
     pub pending: usize,
+    /// A path could not be written to stdout; processing stopped there.
+    pub output_failed: bool,
 }
 
 enum ExtractError {
@@ -281,12 +283,29 @@ pub fn process(data_dir: &DataDir, name: &str, dest: &Path, opts: &Options) -> R
         }
         match extract(data_dir, name, &src, &entry, &insp, dest) {
             Ok(p) => {
-                if opts.print {
+                let written = !opts.print || {
                     let mut so = io::stdout().lock();
-                    let _ = env::write_path_line(&mut so, "", &p);
-                    let _ = so.flush();
-                }
+                    match env::write_path_line(&mut so, "", &p).and_then(|_| so.flush()) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            error_log(format!(
+                                "cannot write the path of an extracted message: {e}; stopping \
+                                 (remaining messages stay in new/)"
+                            ));
+                            false
+                        }
+                    }
+                };
                 out.received.push(p);
+                if !written {
+                    // The caller may not have got any of them: list the
+                    // messages extracted in this run (§7.3 step v).
+                    for r in &out.received {
+                        error_log(format!("extracted {}", r.display()));
+                    }
+                    out.output_failed = true;
+                    break;
+                }
             }
             Err(ExtractError::Message(m)) => {
                 error_log(format!("cannot extract {}: {m}", src.display()));
@@ -341,7 +360,7 @@ pub fn run(ctx: &Ctx, a: &ReceiveArgs) -> Result<()> {
         ..Default::default()
     };
     let out = receive_locked(&ctx.data_dir, &name, &dest, &opts)?;
-    if out.failures + out.moved_to_failed > 0 {
+    if out.failures + out.moved_to_failed > 0 || out.output_failed {
         return Err(LmmError::Exit(1));
     }
     Ok(())
